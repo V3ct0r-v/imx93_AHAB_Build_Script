@@ -1,0 +1,282 @@
+# ===========================  ahab Configuration template for mimx9352, Revision: latest.  ============================
+
+# ======================================================================================================================
+#                                                 == General Options ==                                                 
+# ======================================================================================================================
+# -------------------------------------===== The chip family name [Required] =====--------------------------------------
+# Description: NXP chip family identifier.
+family: mimx9352
+# -----------------------------------------===== MCU revision [Optional] =====------------------------------------------
+# Description: Revision of silicon. The 'latest' name, means most current revision.
+# Possible options: <a0, a1, latest>
+revision: latest
+# -----------------------------------------===== Target memory [Optional] =====-----------------------------------------
+# Description: Target memory for AHAB container
+# Possible options: <serial_downloader, standard, nand_2k, nand_4k, sd_emmc>
+target_memory: standard
+# ---------------------------------------===== Output file name [Required] =====----------------------------------------
+# Description: Output AHAB file name
+output: generated_ahab.bin
+# --------------------------------------===== Output file format [Optional] =====---------------------------------------
+# Description: Output file format for AHAB image
+# Possible options: <bin, hex, srec>
+output_format: bin
+# --------------------------------===== Base offset for the output file [Optional] =====--------------------------------
+# Description: Base offset where the AHAB image will be placed in target memory. (primarily when using SREC/HEX
+# output_format)
+output_offset: 0
+# ------------------------------===== List of containers present in AHAB [Required] =====-------------------------------
+# Description: The order of containers in the list defines the order in AHAB.
+containers:
+  -
+  # ====================================================================================================================
+  #                                          == List of possible 2 options. ==                                          
+  #                                        Options [binary_container, container]                                        
+  # ====================================================================================================================
+
+  #  =========================== [Example of possible configuration: #0 , erase if not used] ============================
+    # -----------------------------------===== Binary AHAB container [Required] =====-----------------------------------
+    # Description: Binary Container format to add to AHAB image, Typically it could be used to add ELE Firmware.
+    binary_container:
+      # -----------------------------===== The AHAB container binary file [Required] =====------------------------------
+      # Description: The binary file that contains AHAB "my_binary_container.bin
+      path: my_ahab_container.bin
+
+  #  =========================== [Example of possible configuration: #1 , erase if not used] ============================
+    # --------------------------------------===== AHAB Container [Required] =====---------------------------------------
+    # Description: Configurable Container format to add to AHAB image. This allow to configure all aspects of the AHAB
+    # container.
+    container:
+      # --------------------------------===== Super Root Key (SRK) set [Required] =====---------------------------------
+      # Description: Defines which set is used to authenticate the container.
+      # Possible options: <none, oem, nxp>
+      srk_set: none
+      # ---------------------------------===== Used SRK [Conditionally required] =====----------------------------------
+      # Description: Which key from SRK set is being used.
+      used_srk_id: 0
+      # -------------------------------------===== SRK revoke mask [Optional] =====-------------------------------------
+      # Description: Bit-mask to indicate which SRKs to revoke. Bit set to 1 means revoke key. Bit 0 = revoke SRK_0, bit
+      # 1 = revoke SRK_1 etc. Example of revocation SRK_0 and SRK_1 - the value should be 0x03
+      srk_revoke_mask: '0x00'
+      # ----------------------------------===== GDET runtime behavior [Optional] =====----------------------------------
+      # Description: This option defines runtime behavior of Glitch detector. Not supported by all devices and their ELE
+      # firmware.
+      #  - disabled:       GDET is disabled after the first OEM container has been authenticated (default behavior)
+      #  - enabled_eleapi: Automatically enable GDET during all ELE API calls
+      #  - enabled:        Leave GDET enabled
+      # Possible options: <disabled, enabled_eleapi, enabled>
+      gdet_runtime_behavior: disabled
+      # --------------------------------------===== Fuse version [Optional] =====---------------------------------------
+      # Description: The value must be equal or greater than the version stored in fuses to allow loading this
+      # container.
+      fuse_version: 0
+      # ------------------------------------===== Software version [Optional] =====-------------------------------------
+      # Description: Number used by Privileged Host Boot Companion (PHBC) to select between multiple images with same
+      # Fuse version field.
+      sw_version: 0
+      # ----------------------------------===== AHAB container signer [Optional] =====----------------------------------
+      # Description: Signature provider configuration in format 'type=<identifier>;<key1>=<value1>;<key2>=<value2>' or a
+      # private key used for sign the container header. Header can be signed by SRK. The referenced SRK must not have
+      # been revoked.
+      signer: type=file;file_path=my_prv_key.pem
+
+      # ================================================================================================================
+      #                     == Configuration of AHAB Container images (array of multiple images) ==                     
+      # ================================================================================================================
+      # ---------------------------------------===== Image array [Required] =====---------------------------------------
+      # Description: Array of image entries.
+      images:
+        -
+        # ==============================================================================================================
+        #                                       == List of possible 7 options. ==                                       
+        #   Options [SPL with optional DDR tunning images, Uboot ATF, Uboot, TEE Trusted Execution Environment, Linux   
+        #                              Kernel Image, Device Tree Blob, General Image Entry]                             
+        # ==============================================================================================================
+
+        #  ====== [Example of possible configuration: #0 SPL with optional DDR tunning images, erase if not used] =======
+        # U-Boot SPL with optional DDR PHY tunning images
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x000000002049A000
+        # image_type:                    executable
+        # core_id:                       cortex-a55
+        # meta_data_start_cpu_id:        2
+        # hash_type:                     SHA384
+          # -----------------------------===== LPDDR memory FW in 1D mode [Required] =====------------------------------
+          # Description: Firmware for LPDDR4/5 memory in 1D mode.
+          lpddr_imem_1d: lpddr_imem_1d.bin
+          # -----------------------------===== LPDDR memory FW in 2D mode [Required] =====------------------------------
+          # Description: Firmware for LPDDR4/5 memory in 2D mode.
+          lpddr_imem_2d: lpddr_imem_2d.bin
+          # ----------------------------===== LPDDR memory data in 1D mode [Required] =====-----------------------------
+          # Description: Data for LPDDR4/5 memory in 1D mode.
+          lpddr_dmem_1d: lpddr_dmem_1d.bin
+          # ----------------------------===== LPDDR memory data in 2D mode [Required] =====-----------------------------
+          # Description: Data for LPDDR4/5 memory in 2D mode.
+          lpddr_dmem_2d: lpddr_dmem_2d.bin
+          # -----------------------------------------===== SPL [Required] =====-----------------------------------------
+          # Description: SPL firmware
+          spl_ddr: spl.bin
+
+        #  ==================== [Example of possible configuration: #1 Uboot ATF, erase if not used] ====================
+        # U-Boot ATF container definition
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x00000000204E0000
+        # image_type:                    executable
+        # core_id:                       cortex-a55
+        # meta_data_start_cpu_id:        2
+        # hash_type:                     SHA384
+          # -------------------------------------===== ATF binary [Required] =====--------------------------------------
+          # Description: ARM Trusted Firmware binary file.
+          atf: bl31.bin
+
+        #  ====================== [Example of possible configuration: #2 Uboot, erase if not used] ======================
+        # U-Boot container definition
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x0000000080200000
+        # image_type:                    executable
+        # core_id:                       cortex-a55
+        # meta_data_start_cpu_id:        2
+        # hash_type:                     SHA384
+          # ------------------------------------===== U-Boot binary [Required] =====------------------------------------
+          # Description: U-Boot binary file.
+          uboot: u-boot.bin
+
+        #  ======== [Example of possible configuration: #3 TEE Trusted Execution Environment, erase if not used] ========
+        # A TEE (Trusted Execution Environment) is a trusted OS running in some secure environment, for example, TrustZone on ARM CPUs, or a separate secure co-processor etc. A TEE driver handles the details needed to communicate with the TEE.
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x0000000096000000
+        # image_type:                    executable
+        # core_id:                       cortex-a55
+        # meta_data_start_cpu_id:        2
+        # hash_type:                     SHA384
+          # -----------------------------------------===== TEE [Required] =====-----------------------------------------
+          # Description: TEE - Trusted Execution Environment binary
+          tee: tee.bin
+
+        #  =============== [Example of possible configuration: #4 Linux Kernel Image, erase if not used] ================
+        # Linux kernel Image container definition
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x0000000080400000
+        # image_type:                    executable
+        # core_id:                       cortex-a55
+        # meta_data_start_cpu_id:        2
+        # hash_type:                     SHA384
+          # ------------------------------===== Linux Kernel Image Binary [Required] =====------------------------------
+          # Description: Linux kernel executable Image binary file (typically Image.bin)
+          kernel: Image.bin
+
+        #  ================ [Example of possible configuration: #5 Device Tree Blob, erase if not used] =================
+        # Device Tree Blob (DTB) container definition
+        # Image array default settings. Can be overridden by definitions that are hidden in the template:
+        # load_address:                  0x0000000083000000
+        # entry_point:                   0x0000000000000000
+        # image_type:                    data
+        # core_id:                       cortex-a55
+        # hash_type:                     SHA384
+          # -------------------------------===== Device Tree Blob Binary [Required] =====-------------------------------
+          # Description: Device Tree Blob (DTB) binary file containing hardware description
+          dtb: device-tree.dtb
+
+        #  =============== [Example of possible configuration: #6 General Image Entry, erase if not used] ===============
+        # General Image Entry
+          # -------------------------------------===== Image path [Optional] =====--------------------------------------
+          # Description: Path to image binary (absolute/relative). In case that only Image Array entry without any data
+          # image is needed, Just do not use the image path. In case that the image size in container should be aligned
+          # differently then SPSDK do (4 bytes for ELE images, 1 byte otherwise), there is hidden option
+          # 'image_size_alignment' where could be override image size by any custom value.
+          image_path: my_image.bin
+          # ---------------------------===== Image offset in AHAB container [Optional] =====----------------------------
+          # Description: Offset in bytes from start of container header to beginning of the image. Zero value means
+          # automatic placing the image with proper alignment after previous one, this is recommended for
+          # serial_downloader mode. In case of XiP type of AHAB image, the load_address and entry_point must correspond
+          # to this values. Example of setting of load_address - AHAB_IMAGE_ADDRESS+IMAGE_OFFSET=LOAD_ADDRESS. The
+          # Booting core images must be located after the other ones
+          image_offset: 0
+          # ------------------------------===== Image destination address [Required] =====------------------------------
+          # Description: Address the image is written to in memory (absolute address in system memory).
+          load_address: '0x1FFC_0000'
+          # ----------------------------------===== Image entry point [Required] =====----------------------------------
+          # Description: Image entry point (absolute address). Valid only for executable image types.
+          entry_point: '0x1FFC_0000'
+          # -------------------------------------===== Image type [Required] =====--------------------------------------
+          # Description: Kind of image.
+          # Possible options: <executable, data, provisioning_image, provisioning_data, v2x_dummy, ele, v2x_primary,
+          # v2x_secondary, v2x_rom_patch>
+          image_type: executable
+          # ---------------------------------------===== Core ID [Required] =====---------------------------------------
+          # Description: Defines the core the image is dedicated for. Not all cores are supported for all families.
+          # Possible options: <cortex-m33, cortex-a55, ele, v2x-1, v2x-2>
+          core_id: cortex-m33
+          # ----------------------------------===== Image encryption [Optional] =====-----------------------------------
+          # Description: Determines, whether image is encrypted or not.
+          is_encrypted: false
+          # ----------------------------------===== Image Descriptor [Optional] =====-----------------------------------
+          # Description: Determines, whether image is descriptor or not.
+          is_image_descriptor: false
+          # -------------------------------------===== Boot flags [Optional] =====--------------------------------------
+          # Description: Boot flags controlling SCFW boot.
+          boot_flags: 0
+          # ------------------------------------===== Start CPU ID [Optional] =====-------------------------------------
+          # Description: Resource ID of CPU to be started
+          meta_data_start_cpu_id: 0
+          # ------------------------------===== CPU memory unit start ID [Optional] =====-------------------------------
+          # Description: Resource ID of the MU associated with the CPU
+          meta_data_mu_cpu_id: 0
+          # ---------------------------------===== Start partition ID [Optional] =====----------------------------------
+          # Description: Partition ID of the partition to start
+          meta_data_start_partition_id: 0
+          # ----------------------------------===== Images HASH type [Optional] =====-----------------------------------
+          # Description: HASH type of image.
+          # Possible options: <sha256, sha384, sha512, sm3>
+          hash_type: sha512
+
+      # ================================================================================================================
+      #                                      == Configuration of AHAB SRK table ==                                      
+      # ================================================================================================================
+      # ---------------------------------===== SRK Table [Conditionally required] =====---------------------------------
+      # Description: SRK (Super Root key) table definition.
+      srk_table:
+        # ----------------------------------------===== CA Flag [Optional] =====----------------------------------------
+        # Description: CA Flag is used by HAB to indicate if the SRK is allowed to sign other keys. In AHAB CA Flag only
+        # affects the final SRKH (Super Root Key Hash) value burned into chip fuses. It is not used in the AHAB signing
+        # process itself. This option exists only for compatibility with systems where fuses are already programmed. In
+        # most cases, this should remain false.
+        flag_ca: false
+        # ------------------------------------===== Hash Algorithm [Optional] =====-------------------------------------
+        # Description: Hash algorithm used for SRK records. If not specified, default algorithm based on key type will
+        # be used.
+        # Possible options: <default, sha256, sha384, sha512, sha3_256, sha3_384, sha3_512, shake_128_256,
+        # shake_256_512, sm3>
+        hash_algorithm: default
+        # ------------------------------===== Super Root Key (SRK) table [Required] =====-------------------------------
+        # Description: Table containing the used SRK records. All SRKs must be of the same type. Supported signing
+        # algorithms are: RSA-PSS, ECDSA, Dilithium or SM2. Supported hash algorithms: sha256, sha384, sha512, sha3_256,
+        # sha3_384, sha3_512, sm3. Supported key sizes/curves: prime256v1, sec384r1, sec512r1, rsa2048, rsa4096,
+        # dilithium3, sm2. Certificate may be of Certificate Authority. Dilithium algorithms are supported just in new
+        # type of AHAB container
+        srk_array:
+          - my_srk_public_key0.pub
+          - my_srk_public_key1.pub
+          - my_srk_public_key2.pub
+          - my_srk_public_key3.pub
+
+      # ================================================================================================================
+      #         == Optional configuration of AHAB Container Encryption blob (if not used, erase the section) ==         
+      # ================================================================================================================
+      # -------------------------------------===== Encryption blob [Optional] =====-------------------------------------
+      # Description: Encryption blob container definition
+      blob:
+        # ------------------------------------===== Key identifier [Required] =====-------------------------------------
+        # Description: The key identifier that has been used to generate DEK keyblob.
+        key_identifier: 0
+        # -------------------------------------===== DEK key size [Required] =====--------------------------------------
+        # Description: Data Encryption key size. Used for AES CBC-MAC (128/192/256 size)
+        # Possible options: <128, 192, 256>
+        dek_key_size: 128
+        # ----------------------------------------===== DEK key [Required] =====----------------------------------------
+        # Description: Data Encryption key. Used for AES CBC-MAC (128/192/256 size). The HEX format is accepted
+        dek_key: my_dek_key.txt
+        # --------------------------------------===== DEK keyblob [Optional] =====--------------------------------------
+        # Description: Wrapped Data Encryption key. Used for AES CBC-MAC (128/192/256 size). The HEX format is accepted.
+        # If NOT used, the empty keyblob is inserted into container and need to be updated later.
+        dek_keyblob: my_wrapped_key.txt
