@@ -24,7 +24,7 @@ SCRIPT_VERSION="6.7"
 #  - Step 6/7: choose boot media (sd vs emmc)
 #
 # Output:
-#   work/outputs/signed-sd-flash.bin   (name kept for compatibility)
+#   work/outputs/signed-container.bin   (name kept for compatibility)
 # -----------------------------------------------------------------------------
 
 # ----------------------------- Defaults --------------------------------------
@@ -512,13 +512,13 @@ step7_export_verify() {
   step "nxpimage ahab export -> outputs/atf_img/u-boot-atf-container.img"
   nxpimage -v ahab export -c inputs/u-boot-atf-container-img_config.yaml
 
-  step "nxpimage bootable-image export -> outputs/signed-sd-flash.bin"
-  nxpimage bootable-image export --config inputs/u-boot-bootable.yaml --output outputs/signed-sd-flash.bin
+  step "nxpimage bootable-image export -> outputs/signed-container.bin"
+  nxpimage bootable-image export --config inputs/u-boot-bootable.yaml --output outputs/signed-container.bin
 
   ls -alR outputs
 
   step "nxpimage bootable-image verify"
-  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary outputs/signed-sd-flash.bin
+  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary outputs/signed-container.bin
 
   deactivate || true
   log_ok "Step 7 complete"
