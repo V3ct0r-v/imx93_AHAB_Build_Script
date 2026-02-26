@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 6.7 [012026]
+# Version: 6.8 [022026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="6.7 [022026]"
+SCRIPT_VERSION="6.8 [022026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -19,9 +19,9 @@ SCRIPT_VERSION="6.7 [022026]"
 #  - Expanded dependency checks (apt-get list mirrored; no header checks)
 #  - Split build into separate ATF + U-Boot steps and renumbered
 #  - Run all with optional pause between steps
-#  - Run all without generating keys (skips Step 5)
+#  - Run all without generating keys (skips Step 7)
 #  - Step 2: choose board target (EVK vs FRDM)
-#  - Step 6/7: choose boot media (sd vs emmc)
+#  - Step 8/9: choose boot media (sd vs emmc)
 # -----------------------------------------------------------------------------
 
 # ----------------------------- Defaults --------------------------------------
@@ -47,6 +47,7 @@ BOOT_MEDIA="${BOOT_MEDIA:-serial_downloader}"        # sd | emmc | serial_downlo
 # Output run id (set once, after args are parsed)
 RUN_ID=""
 OUTPUTS_RUN_DIR=""   # e.g. outputs/20260226_134501_frdm_serial_downloader
+LAST_OUT_BIN=""
 
 # ----------------------------- Resolve WORKDIR (ABS) --------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -111,17 +112,6 @@ uboot_defconfig_for_target() {
   fi
 }
 
-# For AHAB container config, SPSDK examples use target_memory: standard, and for
-# serial downloader flows recommend switching to serial_downloader.
-ahab_target_memory_for_boot_media() {
-  normalize_boot_media
-  if [[ "$BOOT_MEDIA" == "serial_downloader" ]]; then
-    echo "serial_downloader"
-  else
-    echo "standard"
-  fi
-}
-
 init_run_outputs() {
   if [[ -n "${RUN_ID}" && -n "${OUTPUTS_RUN_DIR}" ]]; then
     return 0
@@ -145,17 +135,21 @@ Script version:
 
 Run modes:
   --menu                 Show interactive menu (default)
-  --all                  Run all steps sequentially (1..7)
-  --step N               Run a single step (1..7). Can be repeated.
+  --all                  Run all steps sequentially (1..10)
+  --step N               Run a single step (1..10). Can be repeated.
 
 Convenience step flags (same as --step):
   --atf                  Step 1: Build ARM Trusted Firmware (imx-atf)
   --uboot                Step 2: Build U-Boot (uboot-imx)
-  --download             Step 3: Download DDR + ELE and stage inputs
-  --spsdk                Step 4: Create/activate venv + install SPSDK
-  --keys                 Step 5: Generate & verify keys + Compute SRK Table
-  --yaml                 Step 6: Write YAML configs
-  --export               Step 7: Export signed images + verify
+  --download-ddr         Step 3: Download DDR firmware package
+  --download-ele         Step 4: Download ELE firmware container package
+  --stage-inputs         Step 5: Stage required binaries into inputs/
+  --download             Steps 3..5 (compatibility alias)
+  --spsdk                Step 6: Create/activate venv + install SPSDK
+  --keys                 Step 7: Generate & verify keys + Compute SRK Table
+  --yaml                 Step 8: Write YAML configs
+  --export               Step 9: Export signed image
+  --verify               Step 10: Verify signed image
 
 Target selection:
   --board evk|frdm        Select U-Boot defconfig (default: frdm)
@@ -163,7 +157,7 @@ Target selection:
                           Select bootable-image memory_type (default: serial_downloader)
 
 All-step options:
-  --all-no-keys          Run all steps but skip key generation (skips Step 5)
+  --all-no-keys          Run all steps but skip key generation (skips Step 7)
   --pause                Pause between each step (works with --all/--all-no-keys)
 
 Other options:
@@ -178,15 +172,15 @@ Examples:
   ./imx93_secureboot.sh --atf --uboot --download
   ./imx93_secureboot.sh --all --board frdm --media emmc --pause --log run.log
   ./imx93_secureboot.sh --step 2 --board frdm
-  ./imx93_secureboot.sh --step 4 --step 5 --log spsdk_keys.log
+  ./imx93_secureboot.sh --step 6 --step 7 --log spsdk_keys.log
 TXT
 }
 
 add_step() {
   local n="$1"
   case "$n" in
-    1|2|3|4|5|6|7) STEPS_TO_RUN+=("$n") ;;
-    *) die "Invalid step: $n (valid: 1..7)" ;;
+    1|2|3|4|5|6|7|8|9|10) STEPS_TO_RUN+=("$n") ;;
+    *) die "Invalid step: $n (valid: 1..10)" ;;
   esac
 }
 
@@ -200,11 +194,15 @@ parse_args() {
       --step) RUN_MODE="steps"; add_step "${2:-}"; shift 2 ;;
       --atf) RUN_MODE="steps"; add_step 1; shift ;;
       --uboot) RUN_MODE="steps"; add_step 2; shift ;;
-      --download) RUN_MODE="steps"; add_step 3; shift ;;
-      --spsdk) RUN_MODE="steps"; add_step 4; shift ;;
-      --keys) RUN_MODE="steps"; add_step 5; shift ;;
-      --yaml) RUN_MODE="steps"; add_step 6; shift ;;
-      --export) RUN_MODE="steps"; add_step 7; shift ;;
+      --download-ddr) RUN_MODE="steps"; add_step 3; shift ;;
+      --download-ele) RUN_MODE="steps"; add_step 4; shift ;;
+      --stage-inputs) RUN_MODE="steps"; add_step 5; shift ;;
+      --download) RUN_MODE="steps"; add_step 3; add_step 4; add_step 5; shift ;;
+      --spsdk) RUN_MODE="steps"; add_step 6; shift ;;
+      --keys) RUN_MODE="steps"; add_step 7; shift ;;
+      --yaml) RUN_MODE="steps"; add_step 8; shift ;;
+      --export) RUN_MODE="steps"; add_step 9; shift ;;
+      --verify) RUN_MODE="steps"; add_step 10; shift ;;
 
       --board) BOARD_TARGET="${2:-}"; shift 2; normalize_board_target ;;
       --media) BOOT_MEDIA="${2:-}"; shift 2; normalize_boot_media ;;
@@ -247,6 +245,35 @@ ensure_workspace() {
   # init run folder once we are inside workdir
   init_run_outputs
   mkdir -p "${OUTPUTS_RUN_DIR}"
+}
+
+delete_workdir() {
+  local confirm
+
+  [[ -n "${WORKDIR_ABS}" ]] || die "WORKDIR_ABS is empty; refusing to delete."
+  [[ "${WORKDIR_ABS}" != "/" ]] || die "Refusing to delete '/'."
+  [[ "${WORKDIR_ABS}" != "${SCRIPT_DIR}" ]] || die "Refusing to delete the script directory."
+
+  if [[ ! -e "${WORKDIR_ABS}" ]]; then
+    log_w "Work directory does not exist: ${WORKDIR_ABS}"
+    return 0
+  fi
+
+  echo
+  log_w "This will permanently delete: ${WORKDIR_ABS}"
+  read -r -p "Type DELETE to confirm (anything else cancels): " confirm || true
+  if [[ "${confirm}" != "DELETE" ]]; then
+    log_i "Delete canceled."
+    return 0
+  fi
+
+  rm -rf -- "${WORKDIR_ABS}"
+  log_ok "Deleted work directory: ${WORKDIR_ABS}"
+
+  # Reset run-specific output folder naming for the next action.
+  RUN_ID=""
+  OUTPUTS_RUN_DIR=""
+  init_run_outputs
 }
 
 # ----------------------------- Dependencies ----------------------------------
@@ -332,28 +359,42 @@ step2_build_uboot() {
   pause_if_enabled
 }
 
-step3_download_stage() {
-  step "Step 3: Download DDR firmware + ELE container, stage inputs/"
+step3_download_ddr() {
+  step "Step 3: Download DDR firmware package (EULA)"
   check_host_deps
   ensure_workspace
 
   if [[ ! -f firmware-imx-8.21.bin ]]; then
-    step "Download DDR firmware (EULA)"
     wget -O firmware-imx-8.21.bin "${DDR_EULA_URL}"
     chmod +x firmware-imx-8.21.bin
     ./firmware-imx-8.21.bin --auto-accept
   else
     log_i "DDR EULA package already present: firmware-imx-8.21.bin"
   fi
+  log_ok "Step 3 complete"
+  pause_if_enabled
+}
+
+step4_download_ele() {
+  step "Step 4: Download ELE firmware container package (EULA)"
+  check_host_deps
+  ensure_workspace
 
   if [[ ! -f firmware-ele-imx-2.0.4-93492e0.bin ]]; then
-    step "Download ELE firmware container (EULA)"
     wget -O firmware-ele-imx-2.0.4-93492e0.bin "${ELE_EULA_URL}"
     chmod +x firmware-ele-imx-2.0.4-93492e0.bin
     ./firmware-ele-imx-2.0.4-93492e0.bin --auto-accept
   else
     log_i "ELE EULA package already present: firmware-ele-imx-2.0.4-93492e0.bin"
   fi
+  log_ok "Step 4 complete"
+  pause_if_enabled
+}
+
+step5_stage_inputs() {
+  step "Step 5: Stage required binaries into inputs/"
+  check_host_deps
+  ensure_workspace
 
   step "Copy required binaries into inputs/"
   [[ -f imx-atf/build/imx93/release/bl31.bin ]] || die "Missing bl31.bin (run Step 1 first)"
@@ -374,21 +415,21 @@ step3_download_stage() {
   [[ -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img ]] || die "Missing ELE container after EULA extraction"
   cp -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img inputs/
 
-  log_ok "Step 3 complete"
+  log_ok "Step 5 complete"
   pause_if_enabled
 }
 
-step4_setup_spsdk() {
-  step "Step 4: Create/activate venv + install SPSDK"
+step6_setup_spsdk() {
+  step "Step 6: Create/activate venv + install SPSDK"
   check_host_deps
   ensure_workspace
   spsdk_prereqs
-  log_ok "Step 4 complete"
+  log_ok "Step 6 complete"
   pause_if_enabled
 }
 
-step5_keys() {
-  step "Step 5: Generate & verify keys (ECC-384 secp384r1) + compute SRKH"
+step7_keys() {
+  step "Step 7: Generate & verify keys (ECC-384 secp384r1) + compute SRKH"
   check_host_deps
   ensure_workspace
   spsdk_prereqs
@@ -444,18 +485,15 @@ for i in range(0, len(ahab_srk_hash), 4):
     print(f"SRKH[{i//4}] = 0x{word:08X}")
 PY
 
-  log_ok "Step 5 complete (keys + SRKH ready)"
+  log_ok "Step 7 complete (keys + SRKH ready)"
   pause_if_enabled
 }
 
-step6_yaml() {
+step8_yaml() {
   normalize_boot_media
-  step "Step 6: Write YAML configs (container sets + bootable-image) [media=${BOOT_MEDIA}]"
+  step "Step 8: Write YAML configs (container sets + bootable-image) [media=${BOOT_MEDIA}]"
   check_host_deps
   ensure_workspace
-
-  local AHAB_TARGET_MEMORY
-  AHAB_TARGET_MEMORY="$(ahab_target_memory_for_boot_media)"
 
   mkdir -p "${OUTPUTS_RUN_DIR}/spl_img" "${OUTPUTS_RUN_DIR}/atf_img"
 
@@ -475,7 +513,7 @@ containers:
       srk_set: oem
       used_srk_id: 0
       signer: type=file;file_path=keys/srk0.pem
-      images:target_memory: standard
+      images:
         - lpddr_imem_1d: inputs/lpddr4_imem_1d_v202201.bin
           lpddr_imem_2d: inputs/lpddr4_imem_2d_v202201.bin
           lpddr_dmem_1d: inputs/lpddr4_dmem_1d_v202201.bin
@@ -523,23 +561,22 @@ primary_image_container_set: ${OUTPUTS_RUN_DIR}/spl_img/u-boot-spl-container.img
 secondary_image_container_set: ${OUTPUTS_RUN_DIR}/atf_img/u-boot-atf-container.img
 YAML
 
-  log_ok "Step 6 complete"
-  log_i  "AHAB target_memory=${AHAB_TARGET_MEMORY}"
+  log_ok "Step 8 complete"
   log_i  "Bootable-image memory_type=${BOOT_MEDIA}"
   log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
   pause_if_enabled
 }
 
-step7_export_verify() {
+step9_export_signed_image() {
   normalize_boot_media
-  step "Step 7: Export signed images + verify bootable-image [media=${BOOT_MEDIA}]"
+  step "Step 9: Export signed images [media=${BOOT_MEDIA}]"
   check_host_deps
   ensure_workspace
   spsdk_prereqs
 
-  [[ -f inputs/u-boot-spl-container-img_config.yaml ]] || die "Missing YAML (run Step 6)"
-  [[ -f inputs/u-boot-atf-container-img_config.yaml ]] || die "Missing YAML (run Step 6)"
-  [[ -f inputs/u-boot-bootable.yaml ]] || die "Missing YAML (run Step 6)"
+  [[ -f inputs/u-boot-spl-container-img_config.yaml ]] || die "Missing YAML (run Step 8)"
+  [[ -f inputs/u-boot-atf-container-img_config.yaml ]] || die "Missing YAML (run Step 8)"
+  [[ -f inputs/u-boot-bootable.yaml ]] || die "Missing YAML (run Step 8)"
 
   if [[ "$SKIP_KEYGEN" -eq 1 ]]; then
     [[ -f keys/srk0.pem && -f keys/srk0.pub && -f keys/srk1.pub && -f keys/srk2.pub && -f keys/srk3.pub ]] || \
@@ -554,41 +591,74 @@ step7_export_verify() {
 
   local OUT_BIN
   OUT_BIN="${OUTPUTS_RUN_DIR}/signed-container_${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}.bin"
+  LAST_OUT_BIN="${OUT_BIN}"
 
   step "nxpimage bootable-image export -> ${OUT_BIN}"
   nxpimage bootable-image export --config inputs/u-boot-bootable.yaml --output "${OUT_BIN}"
 
-  # Convenience: create/refresh a "latest" pointer without overwriting historical runs
-  ln -sfn "${OUTPUTS_RUN_DIR}" outputs/latest
-  ln -sfn "${OUT_BIN}" outputs/latest-signed-container.bin
+  # Convenience: create/refresh "latest" pointers without overwriting historical runs.
+  # These links live in ./outputs, so targets must be relative to that directory.
+  local latest_run_target latest_bin_target
+  latest_run_target="${OUTPUTS_RUN_DIR#outputs/}"
+  latest_bin_target="${OUT_BIN#outputs/}"
+  ln -sfn "${latest_run_target}" outputs/latest
+  ln -sfn "${latest_bin_target}" outputs/latest-signed-container.bin
 
   step "List run outputs"
   ls -alR "${OUTPUTS_RUN_DIR}"
 
-  step "nxpimage bootable-image verify"
-  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary "${OUT_BIN}"
-
   deactivate || true
-  log_ok "Step 7 complete"
+  log_ok "Step 9 complete"
   log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
   log_i  "Signed image:        ${WORKDIR_ABS}/${OUT_BIN}"
   log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
   pause_if_enabled
 }
 
+step10_verify_signed_image() {
+  normalize_boot_media
+  step "Step 10: Verify signed bootable-image [media=${BOOT_MEDIA}]"
+  check_host_deps
+  ensure_workspace
+  spsdk_prereqs
+
+  local verify_bin
+  if [[ -n "${LAST_OUT_BIN}" && -f "${LAST_OUT_BIN}" ]]; then
+    verify_bin="${LAST_OUT_BIN}"
+  elif [[ -f outputs/latest-signed-container.bin ]]; then
+    verify_bin="outputs/latest-signed-container.bin"
+  else
+    die "No signed image found to verify. Run Step 9 first (or ensure outputs/latest-signed-container.bin exists)."
+  fi
+
+  step "nxpimage bootable-image verify"
+  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary "${verify_bin}"
+
+  deactivate || true
+  log_ok "Step 10 complete"
+  log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
+  log_i  "Signed image:        ${WORKDIR_ABS}/${OUT_BIN}"
+  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
+  log_i  "Verified image:      ${WORKDIR_ABS}/${verify_bin}"
+  pause_if_enabled
+}
+
 run_all() {
   step1_build_atf
   step2_build_uboot
-  step3_download_stage
-  step4_setup_spsdk
+  step3_download_ddr
+  step4_download_ele
+  step5_stage_inputs
+  step6_setup_spsdk
   if [[ "$SKIP_KEYGEN" -eq 0 ]]; then
-    step5_keys
+    step7_keys
   else
-    log_w "Skipping Step 5 (key generation) due to --all-no-keys"
+    log_w "Skipping Step 7 (key generation) due to --all-no-keys"
     pause_if_enabled
   fi
-  step6_yaml
-  step7_export_verify
+  step8_yaml
+  step9_export_signed_image
+  step10_verify_signed_image
 }
 
 run_steps() {
@@ -606,18 +676,21 @@ run_steps() {
     case "$s" in
       1) step1_build_atf ;;
       2) step2_build_uboot ;;
-      3) step3_download_stage ;;
-      4) step4_setup_spsdk ;;
-      5)
+      3) step3_download_ddr ;;
+      4) step4_download_ele ;;
+      5) step5_stage_inputs ;;
+      6) step6_setup_spsdk ;;
+      7)
         if [[ "$SKIP_KEYGEN" -eq 1 ]]; then
-          log_w "Skipping Step 5 (key generation) due to --all-no-keys"
+          log_w "Skipping Step 7 (key generation) due to --all-no-keys"
           pause_if_enabled
         else
-          step5_keys
+          step7_keys
         fi
         ;;
-      6) step6_yaml ;;
-      7) step7_export_verify ;;
+      8) step8_yaml ;;
+      9) step9_export_signed_image ;;
+      10) step10_verify_signed_image ;;
     esac
   done
 }
@@ -639,18 +712,22 @@ menu() {
   echo -e "${C_BOLD}Select an action:${C_RESET}"
   PS3="$(echo -e "${C_BOLD}Choice> ${C_RESET}")"
   select opt in \
-    "Run ALL steps (1..7) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
+    "Run ALL steps (1..10) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
     "Run ALL steps (skip key generation) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
     "Toggle pause between steps" \
     "Set board target (EVK/FRDM)" \
     "Set boot media (SD/eMMC/Serial Downloader)" \
     "Step 1: Build ARM Trusted Firmware (imx-atf)" \
     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
-    "Step 3: Download DDR+ELE, stage inputs/" \
-    "Step 4: Setup SPSDK venv/tools" \
-    "Step 5: Generate & verify keys + Compute SRK Table" \
-    "Step 6: Write YAML configs [SD/eMMC/Serial Downloader]" \
-    "Step 7: Export signed images + verify" \
+    "Step 3: Download DDR firmware package" \
+    "Step 4: Download ELE firmware container package" \
+    "Step 5: Stage required binaries into inputs/" \
+    "Step 6: Setup SPSDK venv/tools" \
+    "Step 7: Generate & verify keys + Compute SRK Table" \
+    "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]" \
+    "Step 9: Export signed image" \
+    "Step 10: Verify signed image" \
+    "Delete work folder (${WORKDIR_ABS})" \
     "Quit"
   do
     case "$REPLY" in
@@ -695,12 +772,19 @@ menu() {
         ;;
       6) step1_build_atf; break ;;
       7) step2_build_uboot; break ;;
-      8) step3_download_stage; break ;;
-      9) step4_setup_spsdk; break ;;
-      10) step5_keys; break ;;
-      11) step6_yaml; break ;;
-      12) step7_export_verify; break ;;
-      13) log_i "Bye."; break ;;
+      8) step3_download_ddr; break ;;
+      9) step4_download_ele; break ;;
+      10) step5_stage_inputs; break ;;
+      11) step6_setup_spsdk; break ;;
+      12) step7_keys; break ;;
+      13) step8_yaml; break ;;
+      14) step9_export_signed_image; break ;;
+      15) step10_verify_signed_image; break ;;
+      16)
+        delete_workdir
+        continue
+        ;;
+      17) log_i "Bye."; break ;;
       *) log_w "Invalid selection."; continue ;;
     esac
   done
