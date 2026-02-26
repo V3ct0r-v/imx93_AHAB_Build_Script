@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 6.7
+# Version: 6.7 [012026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="6.7"
+SCRIPT_VERSION="6.7 [022026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -22,16 +22,12 @@ SCRIPT_VERSION="6.7"
 #  - Run all without generating keys (skips Step 5)
 #  - Step 2: choose board target (EVK vs FRDM)
 #  - Step 6/7: choose boot media (sd vs emmc)
-#
-# Output:
-#   work/outputs/signed-container.bin   (name kept for compatibility)
-#
 # -----------------------------------------------------------------------------
 
 # ----------------------------- Defaults --------------------------------------
 WORKDIR="${WORKDIR:-work}"
 DDR_EULA_URL="${DDR_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.21.bin}"
-ELE_EULA_URL="${ELE_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-sentinel-0.11.bin}"
+ELE_EULA_URL="${ELE_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-ele-imx-2.0.4-93492e0.bin}"
 
 # pick the v202201 DDR files like typical examples
 DDR_IMEM_1D="lpddr4_imem_1d_v202201.bin"
@@ -44,9 +40,13 @@ NO_COLOR=0
 PAUSE_BETWEEN_STEPS=0
 SKIP_KEYGEN=0
 
-# Target selectors
-BOARD_TARGET="${BOARD_TARGET:-evk}"   # evk | frdm
-BOOT_MEDIA="${BOOT_MEDIA:-sd}"        # sd | emmc
+# Target selectors (requested defaults)
+BOARD_TARGET="${BOARD_TARGET:-frdm}"                 # evk | frdm
+BOOT_MEDIA="${BOOT_MEDIA:-serial_downloader}"        # sd | emmc | serial_downloader
+
+# Output run id (set once, after args are parsed)
+RUN_ID=""
+OUTPUTS_RUN_DIR=""   # e.g. outputs/20260226_134501_frdm_serial_downloader
 
 # ----------------------------- Resolve WORKDIR (ABS) --------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,8 +96,9 @@ normalize_board_target() {
 normalize_boot_media() {
   case "${BOOT_MEDIA,,}" in
     sd) BOOT_MEDIA="sd" ;;
-    emmc|eMMC|sd_emmc) BOOT_MEDIA="emmc" ;;
-    *) die "Invalid BOOT_MEDIA='$BOOT_MEDIA' (use: sd or emmc)" ;;
+    emmc|eMMC) BOOT_MEDIA="emmc" ;;
+    serial_downloader|serial|sdp|sdps) BOOT_MEDIA="serial_downloader" ;;
+    *) die "Invalid BOOT_MEDIA='$BOOT_MEDIA' (use: sd, emmc, or serial_downloader)" ;;
   esac
 }
 
@@ -108,6 +109,25 @@ uboot_defconfig_for_target() {
   else
     echo "imx93_11x11_evk_defconfig"
   fi
+}
+
+# For AHAB container config, SPSDK examples use target_memory: standard, and for
+# serial downloader flows recommend switching to serial_downloader.
+ahab_target_memory_for_boot_media() {
+  normalize_boot_media
+  if [[ "$BOOT_MEDIA" == "serial_downloader" ]]; then
+    echo "serial_downloader"
+  else
+    echo "standard"
+  fi
+}
+
+init_run_outputs() {
+  if [[ -n "${RUN_ID}" && -n "${OUTPUTS_RUN_DIR}" ]]; then
+    return 0
+  fi
+  RUN_ID="$(date +%Y%m%d_%H%M%S)"
+  OUTPUTS_RUN_DIR="outputs/${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}"
 }
 
 # ----------------------------- CLI -------------------------------------------
@@ -138,8 +158,9 @@ Convenience step flags (same as --step):
   --export               Step 7: Export signed images + verify
 
 Target selection:
-  --board evk|frdm        Select U-Boot defconfig (default: evk)
-  --media sd|emmc         Select bootable-image memory_type (default: sd)
+  --board evk|frdm        Select U-Boot defconfig (default: frdm)
+  --media sd|emmc|serial_downloader
+                          Select bootable-image memory_type (default: serial_downloader)
 
 All-step options:
   --all-no-keys          Run all steps but skip key generation (skips Step 5)
@@ -152,9 +173,12 @@ Other options:
   -h, --help             Show this help
 
 Examples:
+  ./imx93_secureboot.sh --all --pause --log run.log
+  ./imx93_secureboot.sh --all-no-keys --pause
+  ./imx93_secureboot.sh --atf --uboot --download
   ./imx93_secureboot.sh --all --board frdm --media emmc --pause --log run.log
   ./imx93_secureboot.sh --step 2 --board frdm
-  ./imx93_secureboot.sh --step 6 --media emmc
+  ./imx93_secureboot.sh --step 4 --step 5 --log spsdk_keys.log
 TXT
 }
 
@@ -220,6 +244,9 @@ setup_logging() {
 ensure_workspace() {
   mkdir -p "${WORKDIR_ABS}/"{inputs,outputs,keys}
   cd "${WORKDIR_ABS}"
+  # init run folder once we are inside workdir
+  init_run_outputs
+  mkdir -p "${OUTPUTS_RUN_DIR}"
 }
 
 # ----------------------------- Dependencies ----------------------------------
@@ -319,13 +346,13 @@ step3_download_stage() {
     log_i "DDR EULA package already present: firmware-imx-8.21.bin"
   fi
 
-  if [[ ! -f firmware-sentinel-0.11.bin ]]; then
+  if [[ ! -f firmware-ele-imx-2.0.4-93492e0.bin ]]; then
     step "Download ELE firmware container (EULA)"
-    wget -O firmware-sentinel-0.11.bin "${ELE_EULA_URL}"
-    chmod +x firmware-sentinel-0.11.bin
-    ./firmware-sentinel-0.11.bin --auto-accept
+    wget -O firmware-ele-imx-2.0.4-93492e0.bin "${ELE_EULA_URL}"
+    chmod +x firmware-ele-imx-2.0.4-93492e0.bin
+    ./firmware-ele-imx-2.0.4-93492e0.bin --auto-accept
   else
-    log_i "ELE EULA package already present: firmware-sentinel-0.11.bin"
+    log_i "ELE EULA package already present: firmware-ele-imx-2.0.4-93492e0.bin"
   fi
 
   step "Copy required binaries into inputs/"
@@ -344,8 +371,8 @@ step3_download_stage() {
   cp -f "${DDR_DIR}/${DDR_DMEM_1D}" inputs/
   cp -f "${DDR_DIR}/${DDR_DMEM_2D}" inputs/
 
-  [[ -f firmware-sentinel-0.11/mx93a1-ahab-container.img ]] || die "Missing ELE container after EULA extraction"
-  cp -f firmware-sentinel-0.11/mx93a1-ahab-container.img inputs/
+  [[ -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img ]] || die "Missing ELE container after EULA extraction"
+  cp -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img inputs/
 
   log_ok "Step 3 complete"
   pause_if_enabled
@@ -427,13 +454,19 @@ step6_yaml() {
   check_host_deps
   ensure_workspace
 
-  mkdir -p outputs/spl_img outputs/atf_img
+  local AHAB_TARGET_MEMORY
+  AHAB_TARGET_MEMORY="$(ahab_target_memory_for_boot_media)"
 
-  cat > inputs/u-boot-spl-container-img_config.yaml <<'YAML'
+  mkdir -p "${OUTPUTS_RUN_DIR}/spl_img" "${OUTPUTS_RUN_DIR}/atf_img"
+
+  # NOTE:
+  #  - target_memory is "standard" for SD/eMMC flows
+  #  - for serial_downloader flows, use "serial_downloader" (SPSDK examples)
+  cat > inputs/u-boot-spl-container-img_config.yaml <<YAML
 family: mimx9352
 revision: a1
-target_memory: sd_emmc
-output: ../outputs/spl_img/u-boot-spl-container.img
+target_memory: standard
+output: ../${OUTPUTS_RUN_DIR}/spl_img/u-boot-spl-container.img
 
 containers:
   - binary_container:
@@ -442,7 +475,7 @@ containers:
       srk_set: oem
       used_srk_id: 0
       signer: type=file;file_path=keys/srk0.pem
-      images:
+      images:target_memory: standard
         - lpddr_imem_1d: inputs/lpddr4_imem_1d_v202201.bin
           lpddr_imem_2d: inputs/lpddr4_imem_2d_v202201.bin
           lpddr_dmem_1d: inputs/lpddr4_dmem_1d_v202201.bin
@@ -456,11 +489,11 @@ containers:
           - keys/srk3.pub
 YAML
 
-  cat > inputs/u-boot-atf-container-img_config.yaml <<'YAML'
+  cat > inputs/u-boot-atf-container-img_config.yaml <<YAML
 family: mimx9352
 revision: a1
 target_memory: standard
-output: ../outputs/atf_img/u-boot-atf-container.img
+output: ../${OUTPUTS_RUN_DIR}/atf_img/u-boot-atf-container.img
 
 containers:
   - container:
@@ -478,16 +511,22 @@ containers:
           - keys/srk3.pub
 YAML
 
+  # Bootable-image config:
+  #  - memory_type: sd | emmc | serial_downloader
+  #  - init_offset: keep 0 unless you have a specific offset requirement
   cat > inputs/u-boot-bootable.yaml <<YAML
 family: mimx9352
 revision: a1
 memory_type: ${BOOT_MEDIA}
 init_offset: 0
-primary_image_container_set: outputs/spl_img/u-boot-spl-container.img
-secondary_image_container_set: outputs/atf_img/u-boot-atf-container.img
+primary_image_container_set: ${OUTPUTS_RUN_DIR}/spl_img/u-boot-spl-container.img
+secondary_image_container_set: ${OUTPUTS_RUN_DIR}/atf_img/u-boot-atf-container.img
 YAML
 
-  log_ok "Step 6 complete (wrote inputs/u-boot-bootable.yaml with memory_type=${BOOT_MEDIA})"
+  log_ok "Step 6 complete"
+  log_i  "AHAB target_memory=${AHAB_TARGET_MEMORY}"
+  log_i  "Bootable-image memory_type=${BOOT_MEDIA}"
+  log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
   pause_if_enabled
 }
 
@@ -507,22 +546,33 @@ step7_export_verify() {
       die "SKIP_KEYGEN enabled but keys are missing. Provide existing keys in ${WORKDIR_ABS}/keys/ (srk0.pem + srk*.pub)."
   fi
 
-  step "nxpimage ahab export -> outputs/spl_img/u-boot-spl-container.img"
+  step "nxpimage ahab export -> ${OUTPUTS_RUN_DIR}/spl_img/u-boot-spl-container.img"
   nxpimage -v ahab export -c inputs/u-boot-spl-container-img_config.yaml
 
-  step "nxpimage ahab export -> outputs/atf_img/u-boot-atf-container.img"
+  step "nxpimage ahab export -> ${OUTPUTS_RUN_DIR}/atf_img/u-boot-atf-container.img"
   nxpimage -v ahab export -c inputs/u-boot-atf-container-img_config.yaml
 
-  step "nxpimage bootable-image export -> outputs/signed-container.bin"
-  nxpimage bootable-image export --config inputs/u-boot-bootable.yaml --output outputs/signed-container.bin
+  local OUT_BIN
+  OUT_BIN="${OUTPUTS_RUN_DIR}/signed-container_${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}.bin"
 
-  ls -alR outputs
+  step "nxpimage bootable-image export -> ${OUT_BIN}"
+  nxpimage bootable-image export --config inputs/u-boot-bootable.yaml --output "${OUT_BIN}"
+
+  # Convenience: create/refresh a "latest" pointer without overwriting historical runs
+  ln -sfn "${OUTPUTS_RUN_DIR}" outputs/latest
+  ln -sfn "${OUT_BIN}" outputs/latest-signed-container.bin
+
+  step "List run outputs"
+  ls -alR "${OUTPUTS_RUN_DIR}"
 
   step "nxpimage bootable-image verify"
-  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary outputs/signed-container.bin
+  nxpimage -vv bootable-image verify --family mimx9352 --revision a1 --mem-type "${BOOT_MEDIA}" --binary "${OUT_BIN}"
 
   deactivate || true
   log_ok "Step 7 complete"
+  log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
+  log_i  "Signed image:        ${WORKDIR_ABS}/${OUT_BIN}"
+  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
   pause_if_enabled
 }
 
@@ -577,11 +627,13 @@ menu() {
   setup_logging
   normalize_board_target
   normalize_boot_media
+  init_run_outputs
 
   log_i "Script version: ${SCRIPT_VERSION}"
   log_i "WORKDIR=${WORKDIR_ABS}"
   log_i "Board target: ${BOARD_TARGET} (U-Boot defconfig: $(uboot_defconfig_for_target))"
   log_i "Boot media: ${BOOT_MEDIA} (bootable-image memory_type)"
+  log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
 
   echo
   echo -e "${C_BOLD}Select an action:${C_RESET}"
@@ -591,13 +643,13 @@ menu() {
     "Run ALL steps (skip key generation) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
     "Toggle pause between steps" \
     "Set board target (EVK/FRDM)" \
-    "Set boot media (SD/eMMC)" \
+    "Set boot media (SD/eMMC/Serial Downloader)" \
     "Step 1: Build ARM Trusted Firmware (imx-atf)" \
     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
     "Step 3: Download DDR+ELE, stage inputs/" \
     "Step 4: Setup SPSDK venv/tools" \
     "Step 5: Generate & verify keys + Compute SRK Table" \
-    "Step 6: Write YAML configs [SD/eMMC]" \
+    "Step 6: Write YAML configs [SD/eMMC/Serial Downloader]" \
     "Step 7: Export signed images + verify" \
     "Quit"
   do
@@ -619,8 +671,8 @@ menu() {
         echo "Select board target:"
         select b in "EVK (imx93_11x11_evk_defconfig)" "FRDM (imx93_11x11_frdm_defconfig)" "Cancel"; do
           case "$REPLY" in
-            1) BOARD_TARGET="evk"; normalize_board_target; log_i "Board target set -> ${BOARD_TARGET}"; break ;;
-            2) BOARD_TARGET="frdm"; normalize_board_target; log_i "Board target set -> ${BOARD_TARGET}"; break ;;
+            1) BOARD_TARGET="evk"; normalize_board_target; init_run_outputs; log_i "Board target set -> ${BOARD_TARGET}"; break ;;
+            2) BOARD_TARGET="frdm"; normalize_board_target; init_run_outputs; log_i "Board target set -> ${BOARD_TARGET}"; break ;;
             3) break ;;
             *) log_w "Invalid selection."; continue ;;
           esac
@@ -630,11 +682,12 @@ menu() {
       5)
         echo
         echo "Select boot media:"
-        select m in "SD (memory_type: sd)" "eMMC (memory_type: emmc)" "Cancel"; do
+        select m in "SD (memory_type: sd)" "eMMC (memory_type: emmc)" "Serial Downloader (memory_type: serial_downloader)" "Cancel"; do
           case "$REPLY" in
-            1) BOOT_MEDIA="sd"; normalize_boot_media; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
-            2) BOOT_MEDIA="emmc"; normalize_boot_media; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
-            3) break ;;
+            1) BOOT_MEDIA="sd"; normalize_boot_media; init_run_outputs; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
+            2) BOOT_MEDIA="emmc"; normalize_boot_media; init_run_outputs; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
+            3) BOOT_MEDIA="serial_downloader"; normalize_boot_media; init_run_outputs; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
+            4) break ;;
             *) log_w "Invalid selection."; continue ;;
           esac
         done
@@ -660,6 +713,7 @@ setup_logging
 
 normalize_board_target
 normalize_boot_media
+init_run_outputs
 
 case "$RUN_MODE" in
   menu)
@@ -668,6 +722,7 @@ case "$RUN_MODE" in
   all)
     log_i "Script version: ${SCRIPT_VERSION}"
     log_i "Running all steps (board=${BOARD_TARGET}, media=${BOOT_MEDIA}, skip keygen: $SKIP_KEYGEN, pause: $PAUSE_BETWEEN_STEPS)"
+    log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
     run_all
     ;;
   steps)
@@ -676,6 +731,7 @@ case "$RUN_MODE" in
     fi
     log_i "Script version: ${SCRIPT_VERSION}"
     log_i "Running steps: ${STEPS_TO_RUN[*]} (board=${BOARD_TARGET}, media=${BOOT_MEDIA}, pause: $PAUSE_BETWEEN_STEPS)"
+    log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
     run_steps
     ;;
   *)
