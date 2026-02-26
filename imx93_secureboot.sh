@@ -25,6 +25,7 @@ SCRIPT_VERSION="6.7"
 #
 # Output:
 #   work/outputs/signed-container.bin   (name kept for compatibility)
+#
 # -----------------------------------------------------------------------------
 
 # ----------------------------- Defaults --------------------------------------
@@ -458,7 +459,7 @@ YAML
   cat > inputs/u-boot-atf-container-img_config.yaml <<'YAML'
 family: mimx9352
 revision: a1
-target_memory: sd_emmc
+target_memory: standard
 output: ../outputs/atf_img/u-boot-atf-container.img
 
 containers:
