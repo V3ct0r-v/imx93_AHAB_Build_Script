@@ -26,7 +26,8 @@ SCRIPT_VERSION="6.8 [022026]"
 
 # ----------------------------- Defaults --------------------------------------
 WORKDIR="${WORKDIR:-work}"
-DDR_EULA_URL="${DDR_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.21.bin}"
+#To be found here: https://www.nxp.com/docs/en/release-note/RN00210.pdf
+DDR_EULA_URL="${DDR_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.30-3fa84fd.bin}"
 ELE_EULA_URL="${ELE_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-ele-imx-2.0.4-93492e0.bin}"
 
 # pick the v202201 DDR files like typical examples
@@ -364,13 +365,14 @@ step3_download_ddr() {
   check_host_deps
   ensure_workspace
 
-  if [[ ! -f firmware-imx-8.21.bin ]]; then
-    wget -O firmware-imx-8.21.bin "${DDR_EULA_URL}"
-    chmod +x firmware-imx-8.21.bin
-    ./firmware-imx-8.21.bin --auto-accept
+  if [[ ! -f firmware-imx-8.30-3fa84fd.bin ]]; then
+    wget -O firmware-imx-8.30-3fa84fd.bin "${DDR_EULA_URL}"
+    chmod +x firmware-imx-8.30-3fa84fd.bin
+    ./firmware-imx-8.30-3fa84fd.bin --auto-accept
   else
-    log_i "DDR EULA package already present: firmware-imx-8.21.bin"
+    log_i "DDR EULA package already present: firmware-imx-8.30-3fa84fd.bin"
   fi
+
   log_ok "Step 3 complete"
   pause_if_enabled
 }
@@ -405,7 +407,7 @@ step5_stage_inputs() {
   cp -f uboot-imx/u-boot.bin inputs/u-boot.bin
   cp -f uboot-imx/spl/u-boot-spl.bin inputs/u-boot-spl.bin
 
-  DDR_DIR="firmware-imx-8.21/firmware/ddr/synopsys"
+  DDR_DIR="firmware-imx-8.30-3fa84fd/firmware/ddr/synopsys"
   [[ -f "${DDR_DIR}/${DDR_IMEM_1D}" ]] || die "DDR file missing: ${DDR_DIR}/${DDR_IMEM_1D}"
   cp -f "${DDR_DIR}/${DDR_IMEM_1D}" inputs/
   cp -f "${DDR_DIR}/${DDR_IMEM_2D}" inputs/
