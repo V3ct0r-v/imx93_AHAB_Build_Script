@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 6.8 [022026]
+# Version: 6.9 [032026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="6.8 [022026]"
+SCRIPT_VERSION="6.9 [032026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -18,17 +18,27 @@ SCRIPT_VERSION="6.8 [022026]"
 #  - Colored console output (disable with --no-color)
 #  - Expanded dependency checks (apt-get list mirrored; no header checks)
 #  - Split build into separate ATF + U-Boot steps and renumbered
+#  - Split export and verify into separate steps
 #  - Run all with optional pause between steps
 #  - Run all without generating keys (skips Step 7)
-#  - Step 2: choose board target (EVK vs FRDM)
-#  - Step 8/9: choose boot media (sd vs emmc)
+#  - Menu selection for board target (EVK vs FRDM)
+#  - Menu selection for boot media (sd, emmc, serial_downloader)
+#  - Menu selection for DDR and ELE firmware packages from Yocto metadata
+#  - Historical outputs preserved with outputs/latest convenience symlinks
 # -----------------------------------------------------------------------------
 
 # ----------------------------- Defaults --------------------------------------
 WORKDIR="${WORKDIR:-work}"
-#To be found here: https://www.nxp.com/docs/en/release-note/RN00210.pdf
-DDR_EULA_URL="${DDR_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.30-3fa84fd.bin}"
-ELE_EULA_URL="${ELE_EULA_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-ele-imx-2.0.4-93492e0.bin}"
+# To be found here: https://www.nxp.com/docs/en/release-note/RN00210.pdf
+FW_MIRROR_BASE_URL="${FW_MIRROR_BASE_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO}"
+FW_ENUM_BRANCH="${FW_ENUM_BRANCH:-imx-linux-walnascar}"
+FW_CATALOG_LIMIT="${FW_CATALOG_LIMIT:-0}"
+DDR_EULA_URL="${DDR_EULA_URL:-${FW_MIRROR_BASE_URL}/firmware-imx-8.30-3fa84fd.bin}"
+ELE_EULA_URL="${ELE_EULA_URL:-${FW_MIRROR_BASE_URL}/firmware-ele-imx-2.0.4-93492e0.bin}"
+DDR_PACKAGE_FILENAME="${DDR_EULA_URL##*/}"
+ELE_PACKAGE_FILENAME="${ELE_EULA_URL##*/}"
+DDR_EXTRACT_DIR="${DDR_PACKAGE_FILENAME%.bin}"
+ELE_EXTRACT_DIR="${ELE_PACKAGE_FILENAME%.bin}"
 
 # pick the v202201 DDR files like typical examples
 DDR_IMEM_1D="lpddr4_imem_1d_v202201.bin"
@@ -121,6 +131,218 @@ init_run_outputs() {
   OUTPUTS_RUN_DIR="outputs/${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}"
 }
 
+
+refresh_firmware_selection_from_urls() {
+  DDR_PACKAGE_FILENAME="${DDR_EULA_URL##*/}"
+  ELE_PACKAGE_FILENAME="${ELE_EULA_URL##*/}"
+  DDR_EXTRACT_DIR="${DDR_PACKAGE_FILENAME%.bin}"
+  ELE_EXTRACT_DIR="${ELE_PACKAGE_FILENAME%.bin}"
+}
+
+firmware_catalog_root() {
+  echo "${WORKDIR_ABS}/firmware-catalog"
+}
+
+firmware_catalog_candidates() {
+  local catalog_root manifest_repo limit
+  catalog_root="$(firmware_catalog_root)"
+  manifest_repo="${catalog_root}/imx-manifest-${FW_ENUM_BRANCH}"
+  limit="${FW_CATALOG_LIMIT}"
+
+  mkdir -p "${catalog_root}/releases"
+
+  if [[ ! -d "${manifest_repo}/.git" ]]; then
+    git clone --depth 1 --branch "${FW_ENUM_BRANCH}" https://github.com/nxp-imx/imx-manifest.git "${manifest_repo}" >/dev/null 2>&1
+  else
+    git -C "${manifest_repo}" fetch -q origin "${FW_ENUM_BRANCH}" --depth 1
+    git -C "${manifest_repo}" reset -q --hard "origin/${FW_ENUM_BRANCH}"
+  fi
+
+  python3 - <<'PYFW' "${manifest_repo}" "${catalog_root}/releases" "${limit}" "${FW_MIRROR_BASE_URL}"
+from pathlib import Path
+import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+manifest_repo = Path(sys.argv[1])
+releases_root = Path(sys.argv[2])
+limit = int(sys.argv[3])
+mirror = sys.argv[4].rstrip('/')
+
+manifests = sorted(
+    [p for p in manifest_repo.glob('imx-*.xml') if re.fullmatch(r'imx-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+\.[0-9]+\.xml', p.name)],
+    key=lambda p: [int(x) for x in re.findall(r'\d+', p.name)],
+)
+if limit > 0:
+    manifests = manifests[-limit:]
+
+
+def run(cmd, cwd=None):
+    subprocess.check_call(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def clone_meta_imx(manifest_file: Path):
+    tree = ET.parse(manifest_file)
+    root = tree.getroot()
+    remotes = {r.attrib['name']: r.attrib.get('fetch', '') for r in root.findall('remote')}
+    default = root.find('default')
+    def_remote = default.attrib.get('remote') if default is not None else None
+    def_rev = default.attrib.get('revision') if default is not None else None
+
+    meta_imx = None
+    for p in root.findall('project'):
+        path = p.attrib.get('path', p.attrib['name'].split('/')[-1])
+        if path.endswith('sources/meta-imx') or path == 'meta-imx':
+            meta_imx = p
+            break
+    if meta_imx is None:
+        return None
+
+    name = meta_imx.attrib['name']
+    path = meta_imx.attrib.get('path', name.split('/')[-1])
+    remote = meta_imx.attrib.get('remote', def_remote)
+    rev = meta_imx.attrib.get('revision', def_rev)
+    fetch = remotes.get(remote, '')
+    if not remote or not rev or not fetch:
+        return None
+
+    url = fetch.rstrip('/') + '/' + name + '.git'
+    release_dir = releases_root / manifest_file.name / 'src'
+    dst = release_dir / Path(path)
+    dst.mkdir(parents=True, exist_ok=True)
+
+    if not (dst / '.git').exists():
+        run(['git', 'init'], cwd=dst)
+        try:
+            run(['git', 'remote', 'add', 'origin', url], cwd=dst)
+        except subprocess.CalledProcessError:
+            pass
+
+    if rev.startswith('refs/tags/'):
+        tag = rev.split('refs/tags/')[1]
+        run(['git', 'fetch', '--depth', '1', 'origin', f'refs/tags/{tag}:refs/tags/{tag}'], cwd=dst)
+        run(['git', 'checkout', '-q', f'refs/tags/{tag}'], cwd=dst)
+    elif re.fullmatch(r'[0-9a-f]{40}', rev):
+        run(['git', 'fetch', '--depth', '1', 'origin', rev], cwd=dst)
+        run(['git', 'checkout', '-q', 'FETCH_HEAD'], cwd=dst)
+    else:
+        try:
+            run(['git', 'fetch', '--depth', '1', 'origin', rev], cwd=dst)
+            run(['git', 'checkout', '-q', 'FETCH_HEAD'], cwd=dst)
+        except subprocess.CalledProcessError:
+            run(['git', 'fetch', '--depth', '1', 'origin', f'refs/tags/{rev}:refs/tags/{rev}'], cwd=dst)
+            run(['git', 'checkout', '-q', f'refs/tags/{rev}'], cwd=dst)
+    return dst
+
+
+for manifest in manifests:
+    meta_imx_dir = clone_meta_imx(manifest)
+    if meta_imx_dir is None:
+        continue
+
+    release = 'LF' + manifest.name[len('imx-'):-len('.xml')]
+    release = release.replace('-', '_')
+    firmware_dir = meta_imx_dir / 'meta-imx-bsp' / 'recipes-bsp' / 'firmware-imx'
+    if not firmware_dir.is_dir():
+        continue
+
+    for recipe in sorted(firmware_dir.glob('firmware-imx_*.bb')):
+        m = re.fullmatch(r'firmware-imx_(.+)\.bb', recipe.name)
+        if not m:
+            continue
+        pv = m.group(1)
+        inc = firmware_dir / f'firmware-imx-{pv}.inc'
+        if not inc.is_file():
+            continue
+        inc_text = inc.read_text(errors='ignore')
+        abbrev_match = re.search(r'^IMX_SRCREV_ABBREV\s*=\s*"([0-9a-f]+)"', inc_text, re.M)
+        if not abbrev_match:
+            continue
+        abbrev = abbrev_match.group(1)
+        filename = f'firmware-imx-{pv}-{abbrev}.bin'
+        url = f'{mirror}/{filename}'
+        print('|'.join((release, 'DDR', pv, abbrev, filename, url)))
+
+    for recipe in sorted(firmware_dir.glob('firmware-ele-imx_*.bb')):
+        m = re.fullmatch(r'firmware-ele-imx_(.+)\.bb', recipe.name)
+        if not m:
+            continue
+        pv = m.group(1)
+        recipe_text = recipe.read_text(errors='ignore')
+        abbrev_match = re.search(r'^IMX_SRCREV_ABBREV\s*=\s*"([0-9a-f]+)"', recipe_text, re.M)
+        if not abbrev_match:
+            continue
+        abbrev = abbrev_match.group(1)
+        filename = f'firmware-ele-imx-{pv}-{abbrev}.bin'
+        url = f'{mirror}/{filename}'
+        print('|'.join((release, 'ELE', pv, abbrev, filename, url)))
+PYFW
+}
+
+select_firmware_candidate() {
+  local kind="$1"
+  local -n candidates_ref="$2"
+  local prompt="$3"
+  local -a labels=()
+  local record release _kind version _srcrev filename _url
+
+  [[ ${#candidates_ref[@]} -gt 0 ]] || return 1
+
+  for record in "${candidates_ref[@]}"; do
+    IFS='|' read -r release _kind version _srcrev filename _url <<< "${record}"
+    labels+=("${release} | ${version} | ${filename}")
+  done
+
+  echo >&2
+  echo "${prompt}" >&2
+  PS3="Choice (${kind})> "
+  select _ in "${labels[@]}" "Cancel"; do
+    if [[ "${REPLY}" -ge 1 && "${REPLY}" -le ${#candidates_ref[@]} ]]; then
+      printf '%s\n' "${candidates_ref[$((REPLY - 1))]}"
+      return 0
+    fi
+    if [[ "${REPLY}" -eq $((${#candidates_ref[@]} + 1)) ]]; then
+      return 1
+    fi
+    log_w "Invalid selection."
+  done
+}
+
+select_firmware_packages() {
+  step "Select DDR + ELE firmware packages from Yocto metadata"
+  check_host_deps
+  ensure_workspace
+
+  local -a all_candidates=() ddr_candidates=() ele_candidates=()
+  local record ddr_choice ele_choice
+
+  mapfile -t all_candidates < <(firmware_catalog_candidates)
+  [[ ${#all_candidates[@]} -gt 0 ]] || die "No firmware candidates found from Yocto metadata (branch: ${FW_ENUM_BRANCH})."
+
+  for record in "${all_candidates[@]}"; do
+    case "${record}" in
+      *"|DDR|"*) ddr_candidates+=("${record}") ;;
+      *"|ELE|"*) ele_candidates+=("${record}") ;;
+    esac
+  done
+
+  ddr_choice="$(select_firmware_candidate "DDR" ddr_candidates "Select a DDR package:" || true)"
+  [[ -n "${ddr_choice}" ]] || { log_i "Firmware selection canceled."; return 0; }
+
+  ele_choice="$(select_firmware_candidate "ELE" ele_candidates "Select an ELE package:" || true)"
+  [[ -n "${ele_choice}" ]] || { log_i "Firmware selection canceled."; return 0; }
+
+  IFS='|' read -r _ _ _ _ _ DDR_EULA_URL <<< "${ddr_choice}"
+  IFS='|' read -r _ _ _ _ _ ELE_EULA_URL <<< "${ele_choice}"
+  refresh_firmware_selection_from_urls
+
+  log_i "Selected DDR package: ${DDR_PACKAGE_FILENAME}"
+  log_i "Selected ELE package: ${ELE_PACKAGE_FILENAME}"
+  log_i "DDR URL: ${DDR_EULA_URL}"
+  log_i "ELE URL: ${ELE_EULA_URL}"
+}
+
 # ----------------------------- CLI -------------------------------------------
 RUN_MODE="menu"         # menu | all | steps
 STEPS_TO_RUN=()         # e.g., (1 3 7)
@@ -157,6 +379,11 @@ Target selection:
   --media sd|emmc|serial_downloader
                           Select bootable-image memory_type (default: serial_downloader)
 
+Firmware catalog (menu-driven selection):
+  FW_ENUM_BRANCH          Yocto manifest branch used for DDR/ELE enumeration (default: imx-linux-walnascar)
+  FW_CATALOG_LIMIT        Limit enumerated releases; 0 = all (default: 0)
+  FW_MIRROR_BASE_URL      Base mirror URL used to build package download URLs
+
 All-step options:
   --all-no-keys          Run all steps but skip key generation (skips Step 7)
   --pause                Pause between each step (works with --all/--all-no-keys)
@@ -174,6 +401,7 @@ Examples:
   ./imx93_secureboot.sh --all --board frdm --media emmc --pause --log run.log
   ./imx93_secureboot.sh --step 2 --board frdm
   ./imx93_secureboot.sh --step 6 --step 7 --log spsdk_keys.log
+  FW_CATALOG_LIMIT=3 ./imx93_secureboot.sh --menu
 TXT
 }
 
@@ -365,12 +593,12 @@ step3_download_ddr() {
   check_host_deps
   ensure_workspace
 
-  if [[ ! -f firmware-imx-8.30-3fa84fd.bin ]]; then
-    wget -O firmware-imx-8.30-3fa84fd.bin "${DDR_EULA_URL}"
-    chmod +x firmware-imx-8.30-3fa84fd.bin
-    ./firmware-imx-8.30-3fa84fd.bin --auto-accept
+  if [[ ! -f "${DDR_PACKAGE_FILENAME}" ]]; then
+    wget -O "${DDR_PACKAGE_FILENAME}" "${DDR_EULA_URL}"
+    chmod +x "${DDR_PACKAGE_FILENAME}"
+    "./${DDR_PACKAGE_FILENAME}" --auto-accept
   else
-    log_i "DDR EULA package already present: firmware-imx-8.30-3fa84fd.bin"
+    log_i "DDR EULA package already present: ${DDR_PACKAGE_FILENAME}"
   fi
 
   log_ok "Step 3 complete"
@@ -382,12 +610,12 @@ step4_download_ele() {
   check_host_deps
   ensure_workspace
 
-  if [[ ! -f firmware-ele-imx-2.0.4-93492e0.bin ]]; then
-    wget -O firmware-ele-imx-2.0.4-93492e0.bin "${ELE_EULA_URL}"
-    chmod +x firmware-ele-imx-2.0.4-93492e0.bin
-    ./firmware-ele-imx-2.0.4-93492e0.bin --auto-accept
+  if [[ ! -f "${ELE_PACKAGE_FILENAME}" ]]; then
+    wget -O "${ELE_PACKAGE_FILENAME}" "${ELE_EULA_URL}"
+    chmod +x "${ELE_PACKAGE_FILENAME}"
+    "./${ELE_PACKAGE_FILENAME}" --auto-accept
   else
-    log_i "ELE EULA package already present: firmware-ele-imx-2.0.4-93492e0.bin"
+    log_i "ELE EULA package already present: ${ELE_PACKAGE_FILENAME}"
   fi
   log_ok "Step 4 complete"
   pause_if_enabled
@@ -407,15 +635,15 @@ step5_stage_inputs() {
   cp -f uboot-imx/u-boot.bin inputs/u-boot.bin
   cp -f uboot-imx/spl/u-boot-spl.bin inputs/u-boot-spl.bin
 
-  DDR_DIR="firmware-imx-8.30-3fa84fd/firmware/ddr/synopsys"
+  DDR_DIR="${DDR_EXTRACT_DIR}/firmware/ddr/synopsys"
   [[ -f "${DDR_DIR}/${DDR_IMEM_1D}" ]] || die "DDR file missing: ${DDR_DIR}/${DDR_IMEM_1D}"
   cp -f "${DDR_DIR}/${DDR_IMEM_1D}" inputs/
   cp -f "${DDR_DIR}/${DDR_IMEM_2D}" inputs/
   cp -f "${DDR_DIR}/${DDR_DMEM_1D}" inputs/
   cp -f "${DDR_DIR}/${DDR_DMEM_2D}" inputs/
 
-  [[ -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img ]] || die "Missing ELE container after EULA extraction"
-  cp -f firmware-ele-imx-2.0.4-93492e0/mx93a1-ahab-container.img inputs/
+  [[ -f "${ELE_EXTRACT_DIR}/mx93a1-ahab-container.img" ]] || die "Missing ELE container after EULA extraction"
+  cp -f "${ELE_EXTRACT_DIR}/mx93a1-ahab-container.img" inputs/
 
   log_ok "Step 5 complete"
   pause_if_enabled
@@ -708,6 +936,8 @@ menu() {
   log_i "WORKDIR=${WORKDIR_ABS}"
   log_i "Board target: ${BOARD_TARGET} (U-Boot defconfig: $(uboot_defconfig_for_target))"
   log_i "Boot media: ${BOOT_MEDIA} (bootable-image memory_type)"
+  log_i "DDR package: ${DDR_PACKAGE_FILENAME}"
+  log_i "ELE package: ${ELE_PACKAGE_FILENAME}"
   log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
 
   echo
@@ -719,6 +949,7 @@ menu() {
     "Toggle pause between steps" \
     "Set board target (EVK/FRDM)" \
     "Set boot media (SD/eMMC/Serial Downloader)" \
+    "Select DDR/ELE firmware packages (Yocto metadata)" \
     "Step 1: Build ARM Trusted Firmware (imx-atf)" \
     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
     "Step 3: Download DDR firmware package" \
@@ -772,21 +1003,25 @@ menu() {
         done
         continue
         ;;
-      6) step1_build_atf; break ;;
-      7) step2_build_uboot; break ;;
-      8) step3_download_ddr; break ;;
-      9) step4_download_ele; break ;;
-      10) step5_stage_inputs; break ;;
-      11) step6_setup_spsdk; break ;;
-      12) step7_keys; break ;;
-      13) step8_yaml; break ;;
-      14) step9_export_signed_image; break ;;
-      15) step10_verify_signed_image; break ;;
-      16)
+      6)
+        select_firmware_packages
+        continue
+        ;;
+      7) step1_build_atf; break ;;
+      8) step2_build_uboot; break ;;
+      9) step3_download_ddr; break ;;
+      10) step4_download_ele; break ;;
+      11) step5_stage_inputs; break ;;
+      12) step6_setup_spsdk; break ;;
+      13) step7_keys; break ;;
+      14) step8_yaml; break ;;
+      15) step9_export_signed_image; break ;;
+      16) step10_verify_signed_image; break ;;
+      17)
         delete_workdir
         continue
         ;;
-      17) log_i "Bye."; break ;;
+      18) log_i "Bye."; break ;;
       *) log_w "Invalid selection."; continue ;;
     esac
   done

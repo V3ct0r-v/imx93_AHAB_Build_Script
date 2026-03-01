@@ -1,6 +1,6 @@
 # i.MX93 Secure Boot Automation (AHAB + SPSDK)
 
-**Current Version:** 6.8
+**Current Version:** 6.9
 
 This repository provides a menu-driven and CLI-friendly Bash script (`imx93_secureboot.sh`) to build, sign, package, export, and verify secure boot images for NXP i.MX93 using AHAB and SPSDK.
 
@@ -11,7 +11,8 @@ The script supports EVK and FRDM targets and can generate bootable images for `s
 | Version | Status | Summary |
 |---|---|---|
 | 6.7 | Initial release | Initial menu/CLI workflow for building TF-A + U-Boot, downloading firmware blobs, generating keys, writing YAML, and exporting signed images. |
-| 6.8 | Current release | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify into separate steps, added `--verify`, added menu option to delete work folder, fixed `outputs/latest*` symlink targets, and improved output handling. |
+| 6.8 | Previous release | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify into separate steps, added `--verify`, added menu option to delete work folder, fixed `outputs/latest*` symlink targets, and improved output handling. |
+| 6.9 | Current release | Added Yocto metadata-driven DDR/ELE package selection in the interactive menu, replaced hardcoded firmware package filenames with the selected values, and added firmware catalog environment knobs (`FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`). |
 
 ## Features
 
@@ -22,6 +23,8 @@ The script supports EVK and FRDM targets and can generate bootable images for `s
 - 10-step workflow with separable download, export, and verify phases
 - Optional pause between steps
 - Optional key generation skip (`--all-no-keys`) for key reuse
+- Interactive Yocto metadata-driven DDR/ELE firmware package selection
+- Firmware catalog environment knobs: `FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`
 - Auto-created convenience symlinks in `work/outputs/`:
 - `latest` -> most recent run output directory
 - `latest-signed-container.bin` -> most recent exported signed image
@@ -93,6 +96,16 @@ The script supports EVK and FRDM targets and can generate bootable images for `s
 - `--board evk|frdm` (default: `frdm`)
 - `--media sd|emmc|serial_downloader` (default: `serial_downloader`)
 
+### Firmware Catalog Selection
+
+The interactive menu includes a DDR/ELE package selector that derives available package versions from Yocto metadata.
+
+Environment knobs:
+
+- `FW_ENUM_BRANCH` (default: `imx-linux-walnascar`)
+- `FW_CATALOG_LIMIT` (default: `0`, meaning all releases)
+- `FW_MIRROR_BASE_URL` (default: `https://www.nxp.com/lgfiles/NMG/MAD/YOCTO`)
+
 ### Other Options
 
 - `--workdir DIR` (default: `work`)
@@ -106,6 +119,9 @@ The script supports EVK and FRDM targets and can generate bootable images for `s
 ```bash
 # Interactive menu
 ./imx93_secureboot.sh
+
+# Interactive menu with the firmware selector limited to the latest 3 releases
+FW_CATALOG_LIMIT=3 ./imx93_secureboot.sh
 
 # Full flow, pause between steps, save log
 ./imx93_secureboot.sh --all --pause --log run.log
@@ -143,6 +159,7 @@ The menu includes actions to:
 - run the full workflow (with or without key generation)
 - run any individual step
 - switch board target and boot media
+- select DDR and ELE package versions from Yocto metadata
 - toggle pause between steps
 - delete the work folder (`WORKDIR`) with typed `DELETE` confirmation
 
