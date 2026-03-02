@@ -531,7 +531,7 @@ spsdk_prereqs() {
   fi
   # shellcheck disable=SC1091
   source spsdk-venv/bin/activate
-  python -m pip install -U "spsdk[examples]" >/dev/null
+  python -m pip install -U wheel "spsdk[examples]" >/dev/null
   need nxpimage
   need nxpcrypto
   nxpimage --version
@@ -867,7 +867,7 @@ step10_verify_signed_image() {
   deactivate || true
   log_ok "Step 10 complete"
   log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
-  log_i  "Signed image:        ${WORKDIR_ABS}/${OUT_BIN}"
+  log_i  "Signed image:        ${WORKDIR_ABS}/${LAST_OUT_BIN}"
   log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
   log_i  "Verified image:      ${WORKDIR_ABS}/${verify_bin}"
   pause_if_enabled
