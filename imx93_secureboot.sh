@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 6.9 [032026]
+# Version: 7.0 [032026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="6.9 [032026]"
+SCRIPT_VERSION="7.0 [032026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -39,6 +39,11 @@ DDR_PACKAGE_FILENAME="${DDR_EULA_URL##*/}"
 ELE_PACKAGE_FILENAME="${ELE_EULA_URL##*/}"
 DDR_EXTRACT_DIR="${DDR_PACKAGE_FILENAME%.bin}"
 ELE_EXTRACT_DIR="${ELE_PACKAGE_FILENAME%.bin}"
+OS_IMAGE_PATH="${OS_IMAGE_PATH:-inputs/Input_OS.bin}"
+OS_LOAD_ADDRESS="${OS_LOAD_ADDRESS:-0x80800000}"
+OS_ENTRY_POINT="${OS_ENTRY_POINT:-0x80800000}"
+OS_CONTAINER_YAML="inputs/imx93_signed_ahab_os_container.yaml"
+LAST_OS_CONTAINER_BIN=""
 
 # pick the v202201 DDR files like typical examples
 DDR_IMEM_1D="lpddr4_imem_1d_v202201.bin"
@@ -137,6 +142,21 @@ refresh_firmware_selection_from_urls() {
   ELE_PACKAGE_FILENAME="${ELE_EULA_URL##*/}"
   DDR_EXTRACT_DIR="${DDR_PACKAGE_FILENAME%.bin}"
   ELE_EXTRACT_DIR="${ELE_PACKAGE_FILENAME%.bin}"
+}
+
+validate_hex32_address() {
+  local label="$1" value="$2"
+  [[ "${value}" =~ ^0x[0-9A-Fa-f]{8}$ ]] || die "Invalid ${label}='${value}'. Use 32-bit format 0x00000000 (hex 0-9,A-F)."
+}
+
+validate_os_container_settings() {
+  [[ -n "${OS_IMAGE_PATH}" ]] || die "OS_IMAGE_PATH cannot be empty"
+  validate_hex32_address "OS_LOAD_ADDRESS" "${OS_LOAD_ADDRESS}"
+  validate_hex32_address "OS_ENTRY_POINT" "${OS_ENTRY_POINT}"
+}
+
+os_container_output_rel() {
+  echo "${OUTPUTS_RUN_DIR}/os_cntr_signed_${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}.bin"
 }
 
 firmware_catalog_root() {
@@ -358,8 +378,8 @@ Script version:
 
 Run modes:
   --menu                 Show interactive menu (default)
-  --all                  Run all steps sequentially (1..10)
-  --step N               Run a single step (1..10). Can be repeated.
+  --all                  Run all steps sequentially (1..13)
+  --step N               Run a single step (1..13). Can be repeated.
 
 Convenience step flags (same as --step):
   --atf                  Step 1: Build ARM Trusted Firmware (imx-atf)
@@ -371,8 +391,11 @@ Convenience step flags (same as --step):
   --spsdk                Step 6: Create/activate venv + install SPSDK
   --keys                 Step 7: Generate & verify keys + Compute SRK Table
   --yaml                 Step 8: Write YAML configs
-  --export               Step 9: Export signed image
-  --verify               Step 10: Verify signed image
+  --export               Step 9: Export signed bootloader image
+  --verify               Step 10: Verify signed bootloader image
+  --os-yaml              Step 11: Write OS container YAML
+  --os-export            Step 12: Export signed OS container
+  --os-verify            Step 13: Verify signed OS container
 
 Target selection:
   --board evk|frdm        Select U-Boot defconfig (default: frdm)
@@ -391,6 +414,9 @@ All-step options:
 Other options:
   --workdir DIR          Working directory (default: work)
   --log FILE             Save all stdout+stderr to FILE (also prints to console)
+  --os-image PATH        OS image path for Step 11/12 (default: inputs/Input_OS.bin)
+  --os-load-address HEX  OS load address, format 0x00000000 (default: 0x80800000)
+  --os-entry-point HEX   OS entry point, format 0x00000000 (default: 0x80800000)
   --no-color             Disable colored output
   -h, --help             Show this help
 
@@ -402,14 +428,16 @@ Examples:
   ./imx93_secureboot.sh --step 2 --board frdm
   ./imx93_secureboot.sh --step 6 --step 7 --log spsdk_keys.log
   FW_CATALOG_LIMIT=3 ./imx93_secureboot.sh --menu
+  ./imx93_secureboot.sh --os-yaml --os-export --os-verify \
+    --os-image inputs/Input_OS.bin --os-load-address 0x80800000 --os-entry-point 0x80800000
 TXT
 }
 
 add_step() {
   local n="$1"
   case "$n" in
-    1|2|3|4|5|6|7|8|9|10) STEPS_TO_RUN+=("$n") ;;
-    *) die "Invalid step: $n (valid: 1..10)" ;;
+    1|2|3|4|5|6|7|8|9|10|11|12|13) STEPS_TO_RUN+=("$n") ;;
+    *) die "Invalid step: $n (valid: 1..13)" ;;
   esac
 }
 
@@ -432,9 +460,15 @@ parse_args() {
       --yaml) RUN_MODE="steps"; add_step 8; shift ;;
       --export) RUN_MODE="steps"; add_step 9; shift ;;
       --verify) RUN_MODE="steps"; add_step 10; shift ;;
+      --os-yaml) RUN_MODE="steps"; add_step 11; shift ;;
+      --os-export) RUN_MODE="steps"; add_step 12; shift ;;
+      --os-verify) RUN_MODE="steps"; add_step 13; shift ;;
 
       --board) BOARD_TARGET="${2:-}"; shift 2; normalize_board_target ;;
       --media) BOOT_MEDIA="${2:-}"; shift 2; normalize_boot_media ;;
+      --os-image) OS_IMAGE_PATH="${2:-}"; shift 2 ;;
+      --os-load-address) OS_LOAD_ADDRESS="${2:-}"; shift 2; validate_hex32_address "OS_LOAD_ADDRESS" "${OS_LOAD_ADDRESS}" ;;
+      --os-entry-point) OS_ENTRY_POINT="${2:-}"; shift 2; validate_hex32_address "OS_ENTRY_POINT" "${OS_ENTRY_POINT}" ;;
 
       --workdir)
         WORKDIR="${2:-}"
@@ -799,7 +833,7 @@ YAML
 
 step9_export_signed_image() {
   normalize_boot_media
-  step "Step 9: Export signed images [media=${BOOT_MEDIA}]"
+  step "Step 9: Export signed bootloader image [media=${BOOT_MEDIA}]"
   check_host_deps
   ensure_workspace
   spsdk_prereqs
@@ -820,7 +854,7 @@ step9_export_signed_image() {
   nxpimage -v ahab export -c inputs/u-boot-atf-container-img_config.yaml
 
   local OUT_BIN
-  OUT_BIN="${OUTPUTS_RUN_DIR}/signed-container_${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}.bin"
+  OUT_BIN="${OUTPUTS_RUN_DIR}/bootloader_cntr_signed_${RUN_ID}_${BOARD_TARGET}_${BOOT_MEDIA}.bin"
   LAST_OUT_BIN="${OUT_BIN}"
 
   step "nxpimage bootable-image export -> ${OUT_BIN}"
@@ -832,7 +866,7 @@ step9_export_signed_image() {
   latest_run_target="${OUTPUTS_RUN_DIR#outputs/}"
   latest_bin_target="${OUT_BIN#outputs/}"
   ln -sfn "${latest_run_target}" outputs/latest
-  ln -sfn "${latest_bin_target}" outputs/latest-signed-container.bin
+  ln -sfn "${latest_bin_target}" outputs/latest-bootloader_cntr_signed.bin
 
   step "List run outputs"
   ls -alR "${OUTPUTS_RUN_DIR}"
@@ -841,13 +875,13 @@ step9_export_signed_image() {
   log_ok "Step 9 complete"
   log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
   log_i  "Signed image:        ${WORKDIR_ABS}/${OUT_BIN}"
-  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
+  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-bootloader_cntr_signed.bin"
   pause_if_enabled
 }
 
 step10_verify_signed_image() {
   normalize_boot_media
-  step "Step 10: Verify signed bootable-image [media=${BOOT_MEDIA}]"
+  step "Step 10: Verify signed bootloader image [media=${BOOT_MEDIA}]"
   check_host_deps
   ensure_workspace
   spsdk_prereqs
@@ -855,10 +889,10 @@ step10_verify_signed_image() {
   local verify_bin
   if [[ -n "${LAST_OUT_BIN}" && -f "${LAST_OUT_BIN}" ]]; then
     verify_bin="${LAST_OUT_BIN}"
-  elif [[ -f outputs/latest-signed-container.bin ]]; then
-    verify_bin="outputs/latest-signed-container.bin"
+  elif [[ -f outputs/latest-bootloader_cntr_signed.bin ]]; then
+    verify_bin="outputs/latest-bootloader_cntr_signed.bin"
   else
-    die "No signed image found to verify. Run Step 9 first (or ensure outputs/latest-signed-container.bin exists)."
+    die "No signed image found to verify. Run Step 9 first (or ensure outputs/latest-bootloader_cntr_signed.bin exists)."
   fi
 
   step "nxpimage bootable-image verify"
@@ -868,8 +902,111 @@ step10_verify_signed_image() {
   log_ok "Step 10 complete"
   log_i  "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
   log_i  "Signed image:        ${WORKDIR_ABS}/${LAST_OUT_BIN}"
-  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-signed-container.bin"
+  log_i  "Latest pointers:     ${WORKDIR_ABS}/outputs/latest  and  ${WORKDIR_ABS}/outputs/latest-bootloader_cntr_signed.bin"
   log_i  "Verified image:      ${WORKDIR_ABS}/${verify_bin}"
+  pause_if_enabled
+}
+
+step11_os_container_yaml() {
+  step "Step 11: Write OS container YAML"
+  check_host_deps
+  ensure_workspace
+  validate_os_container_settings
+
+  local os_out_rel
+  os_out_rel="$(os_container_output_rel)"
+
+  cat > "${OS_CONTAINER_YAML}" <<YAML
+family: mimx9352
+revision: a1
+target_memory: sd_emmc
+output: ../${os_out_rel}
+containers:
+  - container:
+      srk_set: oem
+      used_srk_id: 0
+      srk_revoke_mask: 0
+      fuse_version: 0
+      sw_version: 0
+      signer: type=file;file_path=keys/srk0.pem
+      images:
+        - image_path: ${OS_IMAGE_PATH}
+          image_offset: 0
+          load_address: ${OS_LOAD_ADDRESS}
+          entry_point: ${OS_ENTRY_POINT}
+          image_type: executable
+          core_id: cortex-a55
+          hash_type: sha384
+      srk_table:
+        srk_array:
+          - keys/srk0.pub
+          - keys/srk1.pub
+          - keys/srk2.pub
+          - keys/srk3.pub
+YAML
+
+  log_ok "Step 11 complete"
+  log_i  "OS image path:   ${OS_IMAGE_PATH}"
+  log_i  "Load address:    ${OS_LOAD_ADDRESS}"
+  log_i  "Entry point:     ${OS_ENTRY_POINT}"
+  log_i  "YAML file:       ${WORKDIR_ABS}/${OS_CONTAINER_YAML}"
+  pause_if_enabled
+}
+
+step12_export_os_container() {
+  step "Step 12: Export signed OS container image"
+  check_host_deps
+  ensure_workspace
+  spsdk_prereqs
+  validate_os_container_settings
+
+  [[ -f "${OS_CONTAINER_YAML}" ]] || die "Missing OS container YAML (run Step 11)"
+  [[ -f "${OS_IMAGE_PATH}" ]] || die "Missing OS image '${OS_IMAGE_PATH}'"
+
+  if [[ "$SKIP_KEYGEN" -eq 1 ]]; then
+    [[ -f keys/srk0.pem && -f keys/srk0.pub && -f keys/srk1.pub && -f keys/srk2.pub && -f keys/srk3.pub ]] ||       die "SKIP_KEYGEN enabled but keys are missing. Provide existing keys in ${WORKDIR_ABS}/keys/ (srk0.pem + srk*.pub)."
+  fi
+
+  local os_out_rel
+  os_out_rel="$(os_container_output_rel)"
+
+  step "nxpimage ahab export -> ${os_out_rel}"
+  nxpimage -v ahab export -c "${OS_CONTAINER_YAML}"
+
+  [[ -f "${os_out_rel}" ]] || die "OS container export failed: ${os_out_rel} not found"
+  LAST_OS_CONTAINER_BIN="${os_out_rel}"
+  ln -sfn "${os_out_rel#outputs/}" outputs/latest-os-container.bin
+
+  deactivate || true
+  log_ok "Step 12 complete"
+  log_i  "OS container:    ${WORKDIR_ABS}/${os_out_rel}"
+  log_i  "Latest pointer:  ${WORKDIR_ABS}/outputs/latest-os-container.bin"
+  pause_if_enabled
+}
+
+step13_verify_os_container() {
+  step "Step 13: Verify signed OS container image"
+  check_host_deps
+  ensure_workspace
+  spsdk_prereqs
+
+  local verify_os_bin
+  if [[ -n "${LAST_OS_CONTAINER_BIN}" && -f "${LAST_OS_CONTAINER_BIN}" ]]; then
+    verify_os_bin="${LAST_OS_CONTAINER_BIN}"
+  elif [[ -f "$(os_container_output_rel)" ]]; then
+    verify_os_bin="$(os_container_output_rel)"
+  elif [[ -f outputs/latest-os-container.bin ]]; then
+    verify_os_bin="outputs/latest-os-container.bin"
+  else
+    die "No OS container image found to verify. Run Step 12 first."
+  fi
+
+  step "nxpimage ahab verify"
+  nxpimage -vv ahab verify -f mimx9352 -r a1 -b "${verify_os_bin}"
+
+  deactivate || true
+  log_ok "Step 13 complete"
+  log_i  "Verified OS container: ${WORKDIR_ABS}/${verify_os_bin}"
   pause_if_enabled
 }
 
@@ -889,6 +1026,9 @@ run_all() {
   step8_yaml
   step9_export_signed_image
   step10_verify_signed_image
+  step11_os_container_yaml
+  step12_export_os_container
+  step13_verify_os_container
 }
 
 run_steps() {
@@ -921,6 +1061,49 @@ run_steps() {
       8) step8_yaml ;;
       9) step9_export_signed_image ;;
       10) step10_verify_signed_image ;;
+      11) step11_os_container_yaml ;;
+      12) step12_export_os_container ;;
+      13) step13_verify_os_container ;;
+    esac
+  done
+}
+
+individual_steps_menu() {
+  echo
+  echo -e "${C_BOLD}Individual steps:${C_RESET}"
+  PS3="$(echo -e "${C_BOLD}Step choice> ${C_RESET}")"
+  select sopt in \
+    "Step 1: Build ARM Trusted Firmware (imx-atf)" \
+    "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
+    "Step 3: Download DDR firmware package" \
+    "Step 4: Download ELE firmware container package" \
+    "Step 5: Stage required binaries into inputs/" \
+    "Step 6: Setup SPSDK venv/tools" \
+    "Step 7: Generate & verify keys + Compute SRK Table" \
+    "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]" \
+    "Step 9: Export signed bootloader image" \
+    "Step 10: Verify signed bootloader image" \
+    "Step 11: Write OS container YAML" \
+    "Step 12: Export signed OS container" \
+    "Step 13: Verify signed OS container" \
+    "Back to main menu"
+  do
+    case "$REPLY" in
+      1) step1_build_atf; break ;;
+      2) step2_build_uboot; break ;;
+      3) step3_download_ddr; break ;;
+      4) step4_download_ele; break ;;
+      5) step5_stage_inputs; break ;;
+      6) step6_setup_spsdk; break ;;
+      7) step7_keys; break ;;
+      8) step8_yaml; break ;;
+      9) step9_export_signed_image; break ;;
+      10) step10_verify_signed_image; break ;;
+      11) step11_os_container_yaml; break ;;
+      12) step12_export_os_container; break ;;
+      13) step13_verify_os_container; break ;;
+      14) return ;;
+      *) log_w "Invalid selection."; continue ;;
     esac
   done
 }
@@ -938,28 +1121,25 @@ menu() {
   log_i "Boot media: ${BOOT_MEDIA} (bootable-image memory_type)"
   log_i "DDR package: ${DDR_PACKAGE_FILENAME}"
   log_i "ELE package: ${ELE_PACKAGE_FILENAME}"
+  log_i "OS image path: ${OS_IMAGE_PATH}"
+  log_i "OS load/entry: ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
   log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
 
   echo
   echo -e "${C_BOLD}Select an action:${C_RESET}"
   PS3="$(echo -e "${C_BOLD}Choice> ${C_RESET}")"
   select opt in \
-    "Run ALL steps (1..10) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
+    "Run ALL steps (1..13) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
     "Run ALL steps (skip key generation) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
+    "Run bootloader steps only (1..10)" \
+    "Run OS container steps only (11..13)" \
     "Toggle pause between steps" \
     "Set board target (EVK/FRDM)" \
     "Set boot media (SD/eMMC/Serial Downloader)" \
     "Select DDR/ELE firmware packages (Yocto metadata)" \
-    "Step 1: Build ARM Trusted Firmware (imx-atf)" \
-    "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
-    "Step 3: Download DDR firmware package" \
-    "Step 4: Download ELE firmware container package" \
-    "Step 5: Stage required binaries into inputs/" \
-    "Step 6: Setup SPSDK venv/tools" \
-    "Step 7: Generate & verify keys + Compute SRK Table" \
-    "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]" \
-    "Step 9: Export signed image" \
-    "Step 10: Verify signed image" \
+    "Set OS image path" \
+    "Set OS load + entry addresses" \
+    "Individual steps (Step 1..13)" \
     "Delete work folder (${WORKDIR_ABS})" \
     "Quit"
   do
@@ -967,6 +1147,16 @@ menu() {
       1) SKIP_KEYGEN=0; run_all; break ;;
       2) SKIP_KEYGEN=1; run_all; break ;;
       3)
+        STEPS_TO_RUN=(1 2 3 4 5 6 7 8 9 10)
+        run_steps
+        break
+        ;;
+      4)
+        STEPS_TO_RUN=(11 12 13)
+        run_steps
+        break
+        ;;
+      5)
         if [[ "$PAUSE_BETWEEN_STEPS" -eq 0 ]]; then
           PAUSE_BETWEEN_STEPS=1
           log_i "Pause between steps: ON"
@@ -976,7 +1166,7 @@ menu() {
         fi
         continue
         ;;
-      4)
+      6)
         echo
         echo "Select board target:"
         select b in "EVK (imx93_11x11_evk_defconfig)" "FRDM (imx93_11x11_frdm_defconfig)" "Cancel"; do
@@ -989,7 +1179,7 @@ menu() {
         done
         continue
         ;;
-      5)
+      7)
         echo
         echo "Select boot media:"
         select m in "SD (memory_type: sd)" "eMMC (memory_type: emmc)" "Serial Downloader (memory_type: serial_downloader)" "Cancel"; do
@@ -1003,30 +1193,47 @@ menu() {
         done
         continue
         ;;
-      6)
+      8)
         select_firmware_packages
         continue
         ;;
-      7) step1_build_atf; break ;;
-      8) step2_build_uboot; break ;;
-      9) step3_download_ddr; break ;;
-      10) step4_download_ele; break ;;
-      11) step5_stage_inputs; break ;;
-      12) step6_setup_spsdk; break ;;
-      13) step7_keys; break ;;
-      14) step8_yaml; break ;;
-      15) step9_export_signed_image; break ;;
-      16) step10_verify_signed_image; break ;;
-      17)
+      9)
+        read -r -p "OS image path [${OS_IMAGE_PATH}]: " _os_image || true
+        if [[ -n "${_os_image}" ]]; then
+          OS_IMAGE_PATH="${_os_image}"
+          validate_os_container_settings
+          log_i "OS image path set -> ${OS_IMAGE_PATH}"
+        fi
+        continue
+        ;;
+      10)
+        read -r -p "OS load address [${OS_LOAD_ADDRESS}] (format 0x00000000): " _os_load || true
+        read -r -p "OS entry point [${OS_ENTRY_POINT}] (format 0x00000000): " _os_entry || true
+        if [[ -n "${_os_load}" ]]; then
+          validate_hex32_address "OS_LOAD_ADDRESS" "${_os_load}"
+          OS_LOAD_ADDRESS="${_os_load}"
+        fi
+        if [[ -n "${_os_entry}" ]]; then
+          validate_hex32_address "OS_ENTRY_POINT" "${_os_entry}"
+          OS_ENTRY_POINT="${_os_entry}"
+        fi
+        validate_os_container_settings
+        log_i "OS load/entry set -> ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
+        continue
+        ;;
+      11)
+        individual_steps_menu
+        continue
+        ;;
+      12)
         delete_workdir
         continue
         ;;
-      18) log_i "Bye."; break ;;
+      13) log_i "Bye."; break ;;
       *) log_w "Invalid selection."; continue ;;
     esac
   done
 }
-
 # ----------------------------- Main ------------------------------------------
 parse_args "$@"
 apply_no_color
@@ -1034,6 +1241,7 @@ setup_logging
 
 normalize_board_target
 normalize_boot_media
+validate_os_container_settings
 init_run_outputs
 
 case "$RUN_MODE" in
