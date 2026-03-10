@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 7.0 [032026]
+# Version: 7.1 [032026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="7.0 [032026]"
+SCRIPT_VERSION="7.1 [032026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -29,6 +29,7 @@ SCRIPT_VERSION="7.0 [032026]"
 
 # ----------------------------- Defaults --------------------------------------
 WORKDIR="${WORKDIR:-work}"
+MANIFEST_PATH="${MANIFEST_PATH:-}"
 # To be found here: https://www.nxp.com/docs/en/release-note/RN00210.pdf
 FW_MIRROR_BASE_URL="${FW_MIRROR_BASE_URL:-https://www.nxp.com/lgfiles/NMG/MAD/YOCTO}"
 FW_ENUM_BRANCH="${FW_ENUM_BRANCH:-imx-linux-walnascar}"
@@ -67,11 +68,17 @@ LAST_OUT_BIN=""
 
 # ----------------------------- Resolve WORKDIR (ABS) --------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "${WORKDIR}" = /* ]]; then
-  WORKDIR_ABS="${WORKDIR}"
-else
-  WORKDIR_ABS="${SCRIPT_DIR}/${WORKDIR}"
+if [[ -z "${MANIFEST_PATH}" ]]; then
+  MANIFEST_PATH="${SCRIPT_DIR}/imx93_secureboot.manifest.json"
 fi
+resolve_workdir_abs() {
+  if [[ "${WORKDIR}" = /* ]]; then
+    WORKDIR_ABS="${WORKDIR}"
+  else
+    WORKDIR_ABS="${SCRIPT_DIR}/${WORKDIR}"
+  fi
+}
+resolve_workdir_abs
 
 # ----------------------------- Color -----------------------------------------
 if [[ -t 1 ]]; then
@@ -143,6 +150,137 @@ refresh_firmware_selection_from_urls() {
   DDR_EXTRACT_DIR="${DDR_PACKAGE_FILENAME%.bin}"
   ELE_EXTRACT_DIR="${ELE_PACKAGE_FILENAME%.bin}"
 }
+
+
+load_manifest_defaults() {
+  local manifest_bool manifest_steps
+
+  [[ -f "${MANIFEST_PATH}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || die "Manifest found at '${MANIFEST_PATH}' but 'jq' is not installed."
+
+  log_i "Loading defaults from manifest: ${MANIFEST_PATH}"
+
+  local v=""
+  v="$(jq -r '.defaults.workdir // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && WORKDIR="${v}"
+  v="$(jq -r '.defaults.board_target // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && BOARD_TARGET="${v}"
+  v="$(jq -r '.defaults.boot_media // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && BOOT_MEDIA="${v}"
+  v="$(jq -r '.defaults.os_image_path // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && OS_IMAGE_PATH="${v}"
+  v="$(jq -r '.defaults.os_load_address // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && OS_LOAD_ADDRESS="${v}"
+  v="$(jq -r '.defaults.os_entry_point // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && OS_ENTRY_POINT="${v}"
+  v="$(jq -r '.defaults.log_file // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && LOG_FILE="${v}"
+  v="$(jq -r '.defaults.run_mode // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && RUN_MODE="${v}"
+  v="$(jq -r '.defaults.fw_enum_branch // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && FW_ENUM_BRANCH="${v}"
+  v="$(jq -r '.defaults.fw_catalog_limit // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && FW_CATALOG_LIMIT="${v}"
+  v="$(jq -r '.defaults.fw_mirror_base_url // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && FW_MIRROR_BASE_URL="${v}"
+  v="$(jq -r '.defaults.ddr_eula_url // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && DDR_EULA_URL="${v}"
+  v="$(jq -r '.defaults.ele_eula_url // empty' "${MANIFEST_PATH}")"; [[ -n "${v}" ]] && ELE_EULA_URL="${v}"
+
+  manifest_bool="$(jq -r '.defaults.no_color // empty' "${MANIFEST_PATH}")"
+  [[ "${manifest_bool}" == "true" ]] && NO_COLOR=1
+  [[ "${manifest_bool}" == "false" ]] && NO_COLOR=0
+
+  manifest_bool="$(jq -r '.defaults.pause_between_steps // empty' "${MANIFEST_PATH}")"
+  [[ "${manifest_bool}" == "true" ]] && PAUSE_BETWEEN_STEPS=1
+  [[ "${manifest_bool}" == "false" ]] && PAUSE_BETWEEN_STEPS=0
+
+  manifest_bool="$(jq -r '.defaults.skip_keygen // empty' "${MANIFEST_PATH}")"
+  [[ "${manifest_bool}" == "true" ]] && SKIP_KEYGEN=1
+  [[ "${manifest_bool}" == "false" ]] && SKIP_KEYGEN=0
+
+  manifest_steps="$(jq -r '(.defaults.steps_to_run // []) | map(tostring) | join(" ")' "${MANIFEST_PATH}")"
+  if [[ -n "${manifest_steps}" ]]; then
+    STEPS_TO_RUN=()
+    for v in ${manifest_steps}; do
+      add_step "${v}"
+    done
+  fi
+
+  resolve_workdir_abs
+  refresh_firmware_selection_from_urls
+}
+
+apply_manifest_uboot_env_customizations() {
+  local env_file entries key vtype value safe_value
+
+  [[ -f "${MANIFEST_PATH}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || die "Manifest found at '${MANIFEST_PATH}' but 'jq' is not installed."
+
+  normalize_board_target
+  if [[ "${BOARD_TARGET}" == "frdm" ]]; then
+    env_file="board/freescale/imx93_frdm/imx93_frdm.env"
+  else
+    env_file="board/freescale/imx93_evk/imx93_evk.env"
+  fi
+  [[ -f "${env_file}" ]] || die "Expected U-Boot env file not found: ${env_file}"
+
+  entries="$(jq -r --arg board "${BOARD_TARGET}"     '(.uboot_env_customizations[$board] // {}) | to_entries[]? | [.key, (.value|type), (if .value == null then "" else (.value|tostring) end)] | @tsv'     "${MANIFEST_PATH}")"
+  [[ -n "${entries}" ]] || return 0
+
+  log_i "Applying U-Boot env customizations from manifest for board '${BOARD_TARGET}' -> ${env_file}"
+
+  while IFS=$'	' read -r key vtype value; do
+    [[ -n "${key}" ]] || continue
+    [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "Invalid U-Boot env variable name in manifest: '${key}'"
+
+    if [[ "${vtype}" == "null" ]]; then
+      sed -i "/^${key}=/d" "${env_file}"
+      continue
+    fi
+
+    safe_value="${value//\/\\}"
+    safe_value="${safe_value//&/\&}"
+
+    if grep -qE "^${key}=" "${env_file}"; then
+      sed -i "s|^${key}=.*$|${key}=${safe_value}|" "${env_file}"
+    else
+      printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+    fi
+  done <<< "${entries}"
+}
+
+
+apply_manifest_uboot_kconfig_toggles() {
+  local replace_defaults
+  local -a enable_list disable_list
+  local sym
+
+  # Historical defaults if no manifest override is provided.
+  enable_list=("CONFIG_AHAB_BOOT" "CONFIG_CONSOLE_MUX")
+  disable_list=()
+
+  if [[ -f "${MANIFEST_PATH}" ]]; then
+    command -v jq >/dev/null 2>&1 || die "Manifest found at '${MANIFEST_PATH}' but 'jq' is not installed."
+
+    replace_defaults="$(jq -r '.uboot_kconfig.replace_defaults // false' "${MANIFEST_PATH}")"
+    if [[ "${replace_defaults}" == "true" ]]; then
+      enable_list=()
+      disable_list=()
+    fi
+
+    while IFS= read -r sym; do
+      [[ -n "${sym}" ]] && enable_list+=("${sym}")
+    done < <(jq -r '.uboot_kconfig.enable[]? // empty' "${MANIFEST_PATH}")
+
+    while IFS= read -r sym; do
+      [[ -n "${sym}" ]] && disable_list+=("${sym}")
+    done < <(jq -r '.uboot_kconfig.disable[]? // empty' "${MANIFEST_PATH}")
+  fi
+
+  if [[ ${#enable_list[@]} -gt 0 ]]; then
+    for sym in "${enable_list[@]}"; do
+      [[ "${sym}" =~ ^CONFIG_[A-Z0-9_]+$ ]] || die "Invalid Kconfig symbol in enable list: ${sym}"
+      ./scripts/config --enable "${sym}"
+    done
+  fi
+
+  if [[ ${#disable_list[@]} -gt 0 ]]; then
+    for sym in "${disable_list[@]}"; do
+      [[ "${sym}" =~ ^CONFIG_[A-Z0-9_]+$ ]] || die "Invalid Kconfig symbol in disable list: ${sym}"
+      ./scripts/config --disable "${sym}"
+    done
+  fi
+}
+
 
 validate_hex32_address() {
   local label="$1" value="$2"
@@ -414,6 +552,10 @@ All-step options:
 Other options:
   --workdir DIR          Working directory (default: work)
   --log FILE             Save all stdout+stderr to FILE (also prints to console)
+
+Manifest defaults:
+  MANIFEST_PATH          Optional JSON manifest path (default: ./imx93_secureboot.manifest.json)
+                         Manifest values are loaded first; CLI flags still override them.
   --os-image PATH        OS image path for Step 11/12 (default: inputs/Input_OS.bin)
   --os-load-address HEX  OS load address, format 0x00000000 (default: 0x80800000)
   --os-entry-point HEX   OS entry point, format 0x00000000 (default: 0x80800000)
@@ -473,11 +615,7 @@ parse_args() {
       --workdir)
         WORKDIR="${2:-}"
         shift 2
-        if [[ "${WORKDIR}" = /* ]]; then
-          WORKDIR_ABS="${WORKDIR}"
-        else
-          WORKDIR_ABS="${SCRIPT_DIR}/${WORKDIR}"
-        fi
+        resolve_workdir_abs
         ;;
       --log) LOG_FILE="${2:-}"; shift 2 ;;
       --no-color) NO_COLOR=1; shift ;;
@@ -607,9 +745,10 @@ step2_build_uboot() {
   pushd uboot-imx >/dev/null
   make "${defcfg}"
 
+  apply_manifest_uboot_env_customizations
+
   if [[ -x ./scripts/config ]]; then
-    ./scripts/config --enable CONFIG_AHAB_BOOT
-    ./scripts/config --enable CONFIG_CONSOLE_MUX
+    apply_manifest_uboot_kconfig_toggles
   else
     log_w "uboot-imx/scripts/config not found or not executable; skipping CONFIG_ toggles"
   fi
@@ -1072,21 +1211,8 @@ individual_steps_menu() {
   echo
   echo -e "${C_BOLD}Individual steps:${C_RESET}"
   PS3="$(echo -e "${C_BOLD}Step choice> ${C_RESET}")"
-  select sopt in \
-    "Step 1: Build ARM Trusted Firmware (imx-atf)" \
-    "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]" \
-    "Step 3: Download DDR firmware package" \
-    "Step 4: Download ELE firmware container package" \
-    "Step 5: Stage required binaries into inputs/" \
-    "Step 6: Setup SPSDK venv/tools" \
-    "Step 7: Generate & verify keys + Compute SRK Table" \
-    "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]" \
-    "Step 9: Export signed bootloader image" \
-    "Step 10: Verify signed bootloader image" \
-    "Step 11: Write OS container YAML" \
-    "Step 12: Export signed OS container" \
-    "Step 13: Verify signed OS container" \
-    "Back to main menu"
+  # shellcheck disable=SC2034
+  select sopt in     "Step 1: Build ARM Trusted Firmware (imx-atf)"     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]"     "Step 3: Download DDR firmware package"     "Step 4: Download ELE firmware container package"     "Step 5: Stage required binaries into inputs/"     "Step 6: Setup SPSDK venv/tools"     "Step 7: Generate & verify keys + Compute SRK Table"     "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]"     "Step 9: Export signed bootloader image"     "Step 10: Verify signed bootloader image"     "Step 11: Write OS container YAML"     "Step 12: Export signed OS container"     "Step 13: Verify signed OS container"     "Back to main menu"
   do
     case "$REPLY" in
       1) step1_build_atf; break ;;
@@ -1109,41 +1235,51 @@ individual_steps_menu() {
 }
 
 menu() {
+  local choice
+
   apply_no_color
   setup_logging
   normalize_board_target
   normalize_boot_media
   init_run_outputs
 
-  log_i "Script version: ${SCRIPT_VERSION}"
-  log_i "WORKDIR=${WORKDIR_ABS}"
-  log_i "Board target: ${BOARD_TARGET} (U-Boot defconfig: $(uboot_defconfig_for_target))"
-  log_i "Boot media: ${BOOT_MEDIA} (bootable-image memory_type)"
-  log_i "DDR package: ${DDR_PACKAGE_FILENAME}"
-  log_i "ELE package: ${ELE_PACKAGE_FILENAME}"
-  log_i "OS image path: ${OS_IMAGE_PATH}"
-  log_i "OS load/entry: ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
-  log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
+  show_menu_status() {
+    log_i "Script version: ${SCRIPT_VERSION}"
+    log_i "WORKDIR=${WORKDIR_ABS}"
+    log_i "Board target: ${BOARD_TARGET} (U-Boot defconfig: $(uboot_defconfig_for_target))"
+    log_i "Boot media: ${BOOT_MEDIA} (bootable-image memory_type)"
+    log_i "DDR package: ${DDR_PACKAGE_FILENAME}"
+    log_i "ELE package: ${ELE_PACKAGE_FILENAME}"
+    log_i "OS image path: ${OS_IMAGE_PATH}"
+    log_i "OS load/entry: ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
+    log_i "Run outputs folder: ${WORKDIR_ABS}/${OUTPUTS_RUN_DIR}"
+  }
 
-  echo
-  echo -e "${C_BOLD}Select an action:${C_RESET}"
-  PS3="$(echo -e "${C_BOLD}Choice> ${C_RESET}")"
-  select opt in \
-    "Run ALL steps (1..13) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
-    "Run ALL steps (skip key generation) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]" \
-    "Run bootloader steps only (1..10)" \
-    "Run OS container steps only (11..13)" \
-    "Toggle pause between steps" \
-    "Set board target (EVK/FRDM)" \
-    "Set boot media (SD/eMMC/Serial Downloader)" \
-    "Select DDR/ELE firmware packages (Yocto metadata)" \
-    "Set OS image path" \
-    "Set OS load + entry addresses" \
-    "Individual steps (Step 1..13)" \
-    "Delete work folder (${WORKDIR_ABS})" \
-    "Quit"
-  do
-    case "$REPLY" in
+  print_menu_actions() {
+    echo
+    echo -e "${C_BOLD}Select an action:${C_RESET}"
+    echo "  1) Run ALL steps (1..13) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]"
+    echo "  2) Run ALL steps (skip key generation) [board=${BOARD_TARGET}, media=${BOOT_MEDIA}]"
+    echo "  3) Run bootloader steps only (1..10)"
+    echo "  4) Run OS container steps only (11..13)"
+    echo "  5) Toggle pause between steps"
+    echo "  6) Set board target (EVK/FRDM)"
+    echo "  7) Set boot media (SD/eMMC/Serial Downloader)"
+    echo "  8) Select DDR/ELE firmware packages (Yocto metadata)"
+    echo "  9) Set OS image path"
+    echo " 10) Set OS load + entry addresses"
+    echo " 11) Individual steps (Step 1..13)"
+    echo " 12) Delete work folder (${WORKDIR_ABS})"
+    echo " 13) Quit"
+  }
+
+  show_menu_status
+  print_menu_actions
+
+  while true; do
+    read -r -p "Choice> " choice || true
+
+    case "${choice}" in
       1) SKIP_KEYGEN=0; run_all; break ;;
       2) SKIP_KEYGEN=1; run_all; break ;;
       3)
@@ -1164,11 +1300,11 @@ menu() {
           PAUSE_BETWEEN_STEPS=0
           log_i "Pause between steps: OFF"
         fi
-        continue
         ;;
       6)
         echo
         echo "Select board target:"
+        # shellcheck disable=SC2034
         select b in "EVK (imx93_11x11_evk_defconfig)" "FRDM (imx93_11x11_frdm_defconfig)" "Cancel"; do
           case "$REPLY" in
             1) BOARD_TARGET="evk"; normalize_board_target; init_run_outputs; log_i "Board target set -> ${BOARD_TARGET}"; break ;;
@@ -1177,11 +1313,11 @@ menu() {
             *) log_w "Invalid selection."; continue ;;
           esac
         done
-        continue
         ;;
       7)
         echo
         echo "Select boot media:"
+        # shellcheck disable=SC2034
         select m in "SD (memory_type: sd)" "eMMC (memory_type: emmc)" "Serial Downloader (memory_type: serial_downloader)" "Cancel"; do
           case "$REPLY" in
             1) BOOT_MEDIA="sd"; normalize_boot_media; init_run_outputs; log_i "Boot media set -> ${BOOT_MEDIA}"; break ;;
@@ -1191,11 +1327,9 @@ menu() {
             *) log_w "Invalid selection."; continue ;;
           esac
         done
-        continue
         ;;
       8)
         select_firmware_packages
-        continue
         ;;
       9)
         read -r -p "OS image path [${OS_IMAGE_PATH}]: " _os_image || true
@@ -1204,7 +1338,6 @@ menu() {
           validate_os_container_settings
           log_i "OS image path set -> ${OS_IMAGE_PATH}"
         fi
-        continue
         ;;
       10)
         read -r -p "OS load address [${OS_LOAD_ADDRESS}] (format 0x00000000): " _os_load || true
@@ -1219,22 +1352,31 @@ menu() {
         fi
         validate_os_container_settings
         log_i "OS load/entry set -> ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
-        continue
         ;;
       11)
         individual_steps_menu
-        continue
         ;;
       12)
         delete_workdir
-        continue
         ;;
-      13) log_i "Bye."; break ;;
-      *) log_w "Invalid selection."; continue ;;
+      13)
+        log_i "Bye."
+        break
+        ;;
+      "")
+        echo
+        show_menu_status
+        print_menu_actions
+        ;;
+      *)
+        log_w "Invalid selection. Press ENTER to redraw status/menu."
+        ;;
     esac
   done
 }
+
 # ----------------------------- Main ------------------------------------------
+load_manifest_defaults
 parse_args "$@"
 apply_no_color
 setup_logging

@@ -1,6 +1,9 @@
 # i.MX93 Secure Boot Automation (AHAB + SPSDK)
 
-**Current Version:** 7.0
+**Current Version:** 7.1
+
+
+<span style="color:red"><strong>Do not commit keys or signed outputs.</strong></span>
 
 This repository provides a menu-driven and CLI-friendly Bash script (`imx93_secureboot.sh`) to build, sign, package, export, and verify secure boot artifacts for NXP i.MX93 using AHAB and SPSDK.
 
@@ -13,7 +16,8 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 | 6.7 | Initial release | Initial menu/CLI workflow for building TF-A + U-Boot, downloading firmware blobs, generating keys, writing YAML, and exporting signed images. |
 | 6.8 | Stable | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify, added `--verify`, added menu option to delete work folder, and improved output handling. |
 | 6.9 | Stable | Added Yocto metadata-driven DDR/ELE package selection and firmware catalog environment knobs (`FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`). |
-| 7.0 | Current release | Added OS container flow (steps 11..13), OS image/load/entry customization, individual-steps submenu, bootloader output rename to `bootloader_cntr_signed_*`, and timestamped OS container output naming. |
+| 7.1 | Current release | Added JSON-manifest defaults, manifest-driven U-Boot env + Kconfig customization, and improved menu behavior for status redraw on empty Enter. |
+| 7.0 | Stable | Added OS container flow (steps 11..13), OS image/load/entry customization, individual-steps submenu, bootloader output rename to `bootloader_cntr_signed_*`, and timestamped OS container output naming. |
 
 ## Features
 
@@ -100,6 +104,71 @@ Environment knobs:
 - `FW_ENUM_BRANCH` (default: `imx-linux-walnascar`)
 - `FW_CATALOG_LIMIT` (default: `0`, meaning all releases)
 - `FW_MIRROR_BASE_URL` (default: `https://www.nxp.com/lgfiles/NMG/MAD/YOCTO`)
+
+
+### JSON Manifest Defaults
+
+The script loads defaults from `imx93_secureboot.manifest.json` in the repo root (or from `MANIFEST_PATH` if set).
+
+Behavior:
+
+- Manifest defaults are loaded at startup.
+- CLI arguments still override manifest values.
+- U-Boot env customizations under `uboot_env_customizations.<board>` are applied to the board `.env` file before U-Boot build (Step 2).
+- U-Boot Kconfig toggles are read from `uboot_kconfig` and applied during Step 2 (`scripts/config --enable/--disable`).
+- JSON does not support real comments, so the sample manifest uses a `__comments` object for documentation.
+
+Manifest support requires `jq` when a manifest file is present.
+
+
+Examples:
+
+U-Boot env set/update via manifest:
+
+```json
+{
+  "uboot_env_customizations": {
+    "frdm": {
+      "bootcmd": "mmc dev 0; mmc rescan; fatload mmc 0:1"
+    }
+  }
+}
+```
+
+U-Boot env remove via manifest (`null` deletes the variable from board `.env`):
+
+```json
+{
+  "uboot_env_customizations": {
+    "frdm": {
+      "bootcmd": null
+    }
+  }
+}
+```
+
+U-Boot Kconfig set/clear via manifest:
+
+```json
+{
+  "uboot_kconfig": {
+    "replace_defaults": false,
+    "enable": [
+      "CONFIG_AHAB_BOOT",
+      "CONFIG_CONSOLE_MUX"
+    ],
+    "disable": [
+      "CONFIG_SOME_OPTION"
+    ]
+  }
+}
+```
+
+Notes:
+
+- `replace_defaults=false` keeps built-in defaults and adds your lists.
+- `replace_defaults=true` starts from empty defaults and uses only your `enable`/`disable` lists.
+- Changes are applied during Step 2 before `make olddefconfig`.
 
 ## Output Naming
 

@@ -1,0 +1,55 @@
+{
+  "__comments": {
+    "note": "JSON does not support true comments. This __comments section is ignored by the script and documents valid values.",
+    "board_target": "Allowed: evk, frdm",
+    "boot_media": "Allowed: sd, emmc, serial_downloader",
+    "run_mode": "Allowed: menu, all, steps",
+    "steps_to_run": "Used only when run_mode is steps. Allowed step values: 1..13",
+    "hex_address_format": "Use 32-bit hex format like 0x80800000",
+    "uboot_env_customizations": "Per-board key/value pairs injected into board/*/*.env before U-Boot build",
+    "uboot_kconfig": "Kconfig symbols toggled during Step 2 using scripts/config",
+    "uboot_kconfig_replace_defaults": "If true, do not auto-enable CONFIG_AHAB_BOOT/CONFIG_CONSOLE_MUX unless listed in enable[]",
+    "uboot_env_customizations_remove": "Set value to null to remove that variable from the board .env file during Step 2"
+  },
+  "defaults": {
+    "workdir": "work",
+    "run_mode": "menu",
+    "steps_to_run": [
+      1,
+      2,
+      3
+    ],
+    "board_target": "frdm",
+    "boot_media": "serial_downloader",
+    "pause_between_steps": false,
+    "skip_keygen": false,
+    "no_color": false,
+    "log_file": "",
+    "fw_enum_branch": "imx-linux-walnascar",
+    "fw_catalog_limit": 0,
+    "fw_mirror_base_url": "https://www.nxp.com/lgfiles/NMG/MAD/YOCTO",
+    "ddr_eula_url": "https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.30-3fa84fd.bin",
+    "ele_eula_url": "https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-ele-imx-2.0.4-93492e0.bin",
+    "os_image_path": "inputs/Input_OS.bin",
+    "os_load_address": "0x80800000",
+    "os_entry_point": "0x80800000"
+  },
+  "uboot_env_customizations": {
+    "frdm": {
+      "bootdelay": "0",
+      "stdout": "serial"
+    },
+    "evk": {
+      "bootdelay": "0",
+      "stdout": "serial"
+    }
+  },
+  "uboot_kconfig": {
+    "replace_defaults": false,
+    "enable": [
+      "CONFIG_AHAB_BOOT",
+      "CONFIG_CONSOLE_MUX"
+    ],
+    "disable": []
+  }
+}
