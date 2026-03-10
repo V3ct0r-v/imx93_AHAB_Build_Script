@@ -528,7 +528,7 @@ Convenience step flags (same as --step):
   --download             Steps 3..5 (compatibility alias)
   --spsdk                Step 6: Create/activate venv + install SPSDK
   --keys                 Step 7: Generate & verify keys + Compute SRK Table
-  --yaml                 Step 8: Write YAML configs
+  --yaml                 Step 8: Write SPL/ATF container + bootable-image YAML configs
   --export               Step 9: Export signed bootloader image
   --verify               Step 10: Verify signed bootloader image
   --os-yaml              Step 11: Write OS container YAML
@@ -894,7 +894,7 @@ PY
 
 step8_yaml() {
   normalize_boot_media
-  step "Step 8: Write YAML configs (container sets + bootable-image) [media=${BOOT_MEDIA}]"
+  step "Step 8: Write SPL/ATF container + bootable-image YAML configs [media=${BOOT_MEDIA}]"
   check_host_deps
   ensure_workspace
 
@@ -1212,7 +1212,7 @@ individual_steps_menu() {
   echo -e "${C_BOLD}Individual steps:${C_RESET}"
   PS3="$(echo -e "${C_BOLD}Step choice> ${C_RESET}")"
   # shellcheck disable=SC2034
-  select sopt in     "Step 1: Build ARM Trusted Firmware (imx-atf)"     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]"     "Step 3: Download DDR firmware package"     "Step 4: Download ELE firmware container package"     "Step 5: Stage required binaries into inputs/"     "Step 6: Setup SPSDK venv/tools"     "Step 7: Generate & verify keys + Compute SRK Table"     "Step 8: Write YAML configs [SD/eMMC/Serial Downloader]"     "Step 9: Export signed bootloader image"     "Step 10: Verify signed bootloader image"     "Step 11: Write OS container YAML"     "Step 12: Export signed OS container"     "Step 13: Verify signed OS container"     "Back to main menu"
+  select sopt in     "Step 1: Build ARM Trusted Firmware (imx-atf)"     "Step 2: Build U-Boot (uboot-imx) [EVK/FRDM]"     "Step 3: Download DDR firmware package"     "Step 4: Download ELE firmware container package"     "Step 5: Stage required binaries into inputs/"     "Step 6: Setup SPSDK venv/tools"     "Step 7: Generate & verify keys + Compute SRK Table"     "Step 8: Write SPL/ATF container + bootable-image YAML configs [SD/eMMC/Serial Downloader]"     "Step 9: Export signed bootloader image"     "Step 10: Verify signed bootloader image"     "Step 11: Write OS container YAML"     "Step 12: Export signed OS container"     "Step 13: Verify signed OS container"     "Back to main menu"
   do
     case "$REPLY" in
       1) step1_build_atf; break ;;

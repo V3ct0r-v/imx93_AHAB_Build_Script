@@ -1,5 +1,8 @@
 name: Shell Lint
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches:
@@ -11,8 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v5
 
       - name: Bash Syntax Check
         run: bash -n imx93_secureboot.sh

@@ -13,11 +13,12 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 
 | Version | Status | Summary |
 |---|---|---|
-| 6.7 | Initial release | Initial menu/CLI workflow for building TF-A + U-Boot, downloading firmware blobs, generating keys, writing YAML, and exporting signed images. |
-| 6.8 | Stable | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify, added `--verify`, added menu option to delete work folder, and improved output handling. |
-| 6.9 | Stable | Added Yocto metadata-driven DDR/ELE package selection and firmware catalog environment knobs (`FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`). |
 | 7.1 | Current release | Added JSON-manifest defaults, manifest-driven U-Boot env + Kconfig customization, and improved menu behavior for status redraw on empty Enter. |
 | 7.0 | Stable | Added OS container flow (steps 11..13), OS image/load/entry customization, individual-steps submenu, bootloader output rename to `bootloader_cntr_signed_*`, and timestamped OS container output naming. |
+| 6.9 | Stable | Added Yocto metadata-driven DDR/ELE package selection and firmware catalog environment knobs (`FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`). |
+| 6.8 | Stable | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify, added `--verify`, added menu option to delete work folder, and improved output handling. |
+| 6.7 | Initial release | Initial menu/CLI workflow for building TF-A + U-Boot, downloading firmware blobs, generating keys, writing YAML, and exporting signed images. |
+
 
 ## Features
 
@@ -47,7 +48,7 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 | 5 | Stage required binaries into `inputs/` |
 | 6 | Create/activate Python venv and install SPSDK |
 | 7 | Generate and verify SRK keys, compute SRKH |
-| 8 | Write AHAB + bootable-image YAML configs |
+| 8 | Write SPL/ATF container + bootable-image YAML configs |
 | 9 | Export signed bootloader image |
 | 10 | Verify signed bootloader image |
 | 11 | Write OS container YAML |
@@ -77,7 +78,7 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 - `--download` -> Steps 3, 4, and 5 (compatibility alias)
 - `--spsdk` -> Step 6
 - `--keys` -> Step 7
-- `--yaml` -> Step 8
+- `--yaml` -> Step 8 (SPL/ATF container + bootable-image YAML configs)
 - `--export` -> Step 9
 - `--verify` -> Step 10
 - `--os-yaml` -> Step 11
