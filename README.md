@@ -1,6 +1,6 @@
 # i.MX93 Secure Boot Automation (AHAB + SPSDK)
 
-**Current Version:** 7.1
+**Current Version:** 7.3
 
 
 <span style="color:red"><strong>Do not commit keys or signed outputs.</strong></span>
@@ -13,7 +13,9 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 
 | Version | Status | Summary |
 |---|---|---|
-| 7.1 | Current release | Added JSON-manifest defaults, manifest-driven U-Boot env + Kconfig customization, and improved menu behavior for status redraw on empty Enter. |
+| 7.3 | Current release | Interactive dependency install from menu; non-fatal startup dep warning; `assert_host_deps` before build runs; added `libusb-1.0-0-dev`, `libudev-dev`, `libgnutls28-dev`, `efitools`, `CROSS_COMPILE`/`ARCH` for ATF and U-Boot; fix CLI `--step` overriding manifest `steps_to_run`; set work folder from menu. |
+| 7.2 | Stable | Pre-flight dependency check at startup; reports all missing tools at once with correct apt package names. `jq` now always required (not gated on manifest presence). |
+| 7.1 | Stable | Added JSON-manifest defaults, manifest-driven U-Boot env + Kconfig customization, and improved menu behavior for status redraw on empty Enter. |
 | 7.0 | Stable | Added OS container flow (steps 11..13), OS image/load/entry customization, individual-steps submenu, bootloader output rename to `bootloader_cntr_signed_*`, and timestamped OS container output naming. |
 | 6.9 | Stable | Added Yocto metadata-driven DDR/ELE package selection and firmware catalog environment knobs (`FW_ENUM_BRANCH`, `FW_CATALOG_LIMIT`, `FW_MIRROR_BASE_URL`). |
 | 6.8 | Stable | Split download/staging into separate steps (DDR, ELE, stage inputs), split export/verify, added `--verify`, added menu option to delete work folder, and improved output handling. |
@@ -119,7 +121,7 @@ Behavior:
 - U-Boot Kconfig toggles are read from `uboot_kconfig` and applied during Step 2 (`scripts/config --enable/--disable`).
 - JSON does not support real comments, so the sample manifest uses a `__comments` object for documentation.
 
-Manifest support requires `jq` when a manifest file is present.
+`jq` is always required and verified at startup.
 
 
 Examples:

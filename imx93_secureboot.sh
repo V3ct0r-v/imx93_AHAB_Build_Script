@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 7.1 [032026]
+# Version: 7.3 [062026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="7.1 [032026]"
+SCRIPT_VERSION="7.3 [062026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -16,7 +16,7 @@ SCRIPT_VERSION="7.1 [032026]"
 #  - CLI arguments for each step
 #  - Optional logging (--log file)
 #  - Colored console output (disable with --no-color)
-#  - Expanded dependency checks (apt-get list mirrored; no header checks)
+#  - Pre-flight dependency check at startup; all missing tools reported at once with correct apt package names
 #  - Split build into separate ATF + U-Boot steps and renumbered
 #  - Split export and verify into separate steps
 #  - Run all with optional pause between steps
@@ -156,7 +156,6 @@ load_manifest_defaults() {
   local manifest_bool manifest_steps
 
   [[ -f "${MANIFEST_PATH}" ]] || return 0
-  command -v jq >/dev/null 2>&1 || die "Manifest found at '${MANIFEST_PATH}' but 'jq' is not installed."
 
   log_i "Loading defaults from manifest: ${MANIFEST_PATH}"
 
@@ -469,7 +468,6 @@ select_firmware_candidate() {
 
 select_firmware_packages() {
   step "Select DDR + ELE firmware packages from Yocto metadata"
-  check_host_deps
   ensure_workspace
 
   local -a all_candidates=() ddr_candidates=() ele_candidates=()
@@ -575,10 +573,17 @@ Examples:
 TXT
 }
 
+_CLI_STEPS_SEEN=0
 add_step() {
   local n="$1"
   case "$n" in
-    1|2|3|4|5|6|7|8|9|10|11|12|13) STEPS_TO_RUN+=("$n") ;;
+    1|2|3|4|5|6|7|8|9|10|11|12|13)
+      if [[ "$_CLI_STEPS_SEEN" -eq 0 ]]; then
+        STEPS_TO_RUN=()
+        _CLI_STEPS_SEEN=1
+      fi
+      STEPS_TO_RUN+=("$n")
+      ;;
     *) die "Invalid step: $n (valid: 1..13)" ;;
   esac
 }
@@ -678,23 +683,79 @@ delete_workdir() {
 }
 
 # ----------------------------- Dependencies ----------------------------------
-check_host_deps() {
-  need git
-  need make
-  need wget
-  need python3
-  need pip3
-  need gcc
-  need aarch64-linux-gnu-gcc
-  need aarch64-linux-gnu-objcopy
-  need bc
-  need bison
-  need flex
-  need lsblk
+# Maps binary name -> apt package name. Add entries here as requirements change.
+declare -A REQUIRED_HOST_TOOLS=(
+  [git]=git
+  [make]=make
+  [wget]=wget
+  [python3]=python3
+  [pip3]=python3-pip
+  [gcc]=gcc
+  [aarch64-linux-gnu-gcc]=gcc-aarch64-linux-gnu
+  [aarch64-linux-gnu-objcopy]=binutils-aarch64-linux-gnu
+  [bc]=bc
+  [bison]=bison
+  [flex]=flex
+  [lsblk]=util-linux
+  [jq]=jq
+  [pkg-config]=pkg-config
+  [cert-to-efi-sig-list]=efitools
+)
 
-  python3 - <<'PY' >/dev/null 2>&1 || die "missing required package: python3-venv (venv module unavailable)"
-import venv
-PY
+# Maps pkg-config name -> apt package name for dev libraries (no binary equivalent).
+declare -A REQUIRED_HOST_LIBS=(
+  [openssl]=libssl-dev
+  [gnutls]=libgnutls28-dev
+  [libusb-1.0]=libusb-1.0-0-dev
+  [libudev]=libudev-dev
+)
+
+_collect_missing_deps() {
+  _MISSING_BINS=(); _MISSING_PKGS=()
+
+  for bin in "${!REQUIRED_HOST_TOOLS[@]}"; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      _MISSING_BINS+=("$bin")
+      _MISSING_PKGS+=("${REQUIRED_HOST_TOOLS[$bin]}")
+    fi
+  done
+
+  python3 -c "import venv" 2>/dev/null || { _MISSING_BINS+=(python3-venv); _MISSING_PKGS+=(python3-venv); }
+
+  if command -v pkg-config >/dev/null 2>&1; then
+    for lib in "${!REQUIRED_HOST_LIBS[@]}"; do
+      if ! pkg-config --exists "$lib" 2>/dev/null; then
+        _MISSING_BINS+=("${lib} headers")
+        _MISSING_PKGS+=("${REQUIRED_HOST_LIBS[$lib]}")
+      fi
+    done
+  fi
+
+  [[ ${#_MISSING_BINS[@]} -eq 0 ]]
+}
+
+warn_host_deps() {
+  _collect_missing_deps && return 0
+  log_w "Missing dependencies: ${_MISSING_BINS[*]}"
+  log_w "Use menu option 'Install dependencies' or: sudo apt-get install -y ${_MISSING_PKGS[*]}"
+}
+
+assert_host_deps() {
+  _collect_missing_deps && return 0
+  log_e "Missing required tools: ${_MISSING_BINS[*]}"
+  log_e "Install with: sudo apt-get install -y ${_MISSING_PKGS[*]}"
+  exit 1
+}
+
+install_host_deps() {
+  step "Install host dependencies"
+  local all_pkgs=()
+  for pkg in "${REQUIRED_HOST_TOOLS[@]}"; do all_pkgs+=("$pkg"); done
+  for pkg in "${REQUIRED_HOST_LIBS[@]}"; do all_pkgs+=("$pkg"); done
+  all_pkgs+=(python3-venv)
+  log_i "Running: sudo apt-get install -y ${all_pkgs[*]}"
+  sudo apt-get install -y "${all_pkgs[@]}"
+  log_ok "Dependencies installed."
 }
 
 spsdk_prereqs() {
@@ -713,7 +774,6 @@ spsdk_prereqs() {
 # ----------------------------- Steps -----------------------------------------
 step1_build_atf() {
   step "Step 1: Build ARM Trusted Firmware (imx-atf)"
-  check_host_deps
   ensure_workspace
 
   if [[ ! -d imx-atf ]]; then
@@ -722,7 +782,7 @@ step1_build_atf() {
 
   pushd imx-atf >/dev/null
   unset LDFLAGS
-  make PLAT=imx93 bl31
+  make PLAT=imx93 CROSS_COMPILE=aarch64-linux-gnu- bl31
   popd >/dev/null
 
   log_ok "Step 1 complete"
@@ -735,7 +795,6 @@ step2_build_uboot() {
   defcfg="$(uboot_defconfig_for_target)"
 
   step "Step 2: Build U-Boot (uboot-imx) [board=${BOARD_TARGET} -> ${defcfg}]"
-  check_host_deps
   ensure_workspace
 
   if [[ ! -d uboot-imx ]]; then
@@ -743,7 +802,7 @@ step2_build_uboot() {
   fi
 
   pushd uboot-imx >/dev/null
-  make "${defcfg}"
+  make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- "${defcfg}"
 
   apply_manifest_uboot_env_customizations
 
@@ -753,8 +812,8 @@ step2_build_uboot() {
     log_w "uboot-imx/scripts/config not found or not executable; skipping CONFIG_ toggles"
   fi
 
-  make olddefconfig
-  make -j"$(nproc)"
+  make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+  make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)"
   popd >/dev/null
 
   log_ok "Step 2 complete"
@@ -763,7 +822,6 @@ step2_build_uboot() {
 
 step3_download_ddr() {
   step "Step 3: Download DDR firmware package (EULA)"
-  check_host_deps
   ensure_workspace
 
   if [[ ! -f "${DDR_PACKAGE_FILENAME}" ]]; then
@@ -780,7 +838,6 @@ step3_download_ddr() {
 
 step4_download_ele() {
   step "Step 4: Download ELE firmware container package (EULA)"
-  check_host_deps
   ensure_workspace
 
   if [[ ! -f "${ELE_PACKAGE_FILENAME}" ]]; then
@@ -796,7 +853,6 @@ step4_download_ele() {
 
 step5_stage_inputs() {
   step "Step 5: Stage required binaries into inputs/"
-  check_host_deps
   ensure_workspace
 
   step "Copy required binaries into inputs/"
@@ -824,7 +880,6 @@ step5_stage_inputs() {
 
 step6_setup_spsdk() {
   step "Step 6: Create/activate venv + install SPSDK"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
   log_ok "Step 6 complete"
@@ -833,7 +888,6 @@ step6_setup_spsdk() {
 
 step7_keys() {
   step "Step 7: Generate & verify keys (ECC-384 secp384r1) + compute SRKH"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
 
@@ -882,7 +936,7 @@ print(srk_binary.hex())
 write_file(srk_binary, srk_binary_path, mode="wb")
 print(f"\nSRK table saved to: {srk_binary_path}")
 
-print("\nSRKH fuse values (OTP 128–135):")
+print("\nSRKH fuse values (OTP 128â€“135):")
 for i in range(0, len(ahab_srk_hash), 4):
     word = int.from_bytes(ahab_srk_hash[i : i + 4], byteorder=Endianness.LITTLE.value)
     print(f"SRKH[{i//4}] = 0x{word:08X}")
@@ -895,7 +949,6 @@ PY
 step8_yaml() {
   normalize_boot_media
   step "Step 8: Write SPL/ATF container + bootable-image YAML configs [media=${BOOT_MEDIA}]"
-  check_host_deps
   ensure_workspace
 
   mkdir -p "${OUTPUTS_RUN_DIR}/spl_img" "${OUTPUTS_RUN_DIR}/atf_img"
@@ -973,7 +1026,6 @@ YAML
 step9_export_signed_image() {
   normalize_boot_media
   step "Step 9: Export signed bootloader image [media=${BOOT_MEDIA}]"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
 
@@ -1021,7 +1073,6 @@ step9_export_signed_image() {
 step10_verify_signed_image() {
   normalize_boot_media
   step "Step 10: Verify signed bootloader image [media=${BOOT_MEDIA}]"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
 
@@ -1048,7 +1099,6 @@ step10_verify_signed_image() {
 
 step11_os_container_yaml() {
   step "Step 11: Write OS container YAML"
-  check_host_deps
   ensure_workspace
   validate_os_container_settings
 
@@ -1094,7 +1144,6 @@ YAML
 
 step12_export_os_container() {
   step "Step 12: Export signed OS container image"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
   validate_os_container_settings
@@ -1125,7 +1174,6 @@ step12_export_os_container() {
 
 step13_verify_os_container() {
   step "Step 13: Verify signed OS container image"
-  check_host_deps
   ensure_workspace
   spsdk_prereqs
 
@@ -1150,6 +1198,7 @@ step13_verify_os_container() {
 }
 
 run_all() {
+  assert_host_deps
   step1_build_atf
   step2_build_uboot
   step3_download_ddr
@@ -1171,6 +1220,7 @@ run_all() {
 }
 
 run_steps() {
+  assert_host_deps
   local -A seen=()
   local ordered=()
   local s
@@ -1268,9 +1318,11 @@ menu() {
     echo "  8) Select DDR/ELE firmware packages (Yocto metadata)"
     echo "  9) Set OS image path"
     echo " 10) Set OS load + entry addresses"
-    echo " 11) Individual steps (Step 1..13)"
-    echo " 12) Delete work folder (${WORKDIR_ABS})"
-    echo " 13) Quit"
+    echo " 11) Set work folder (${WORKDIR_ABS})"
+    echo " 12) Individual steps (Step 1..13)"
+    echo " 13) Install dependencies (apt-get)"
+    echo " 14) Delete work folder (${WORKDIR_ABS})"
+    echo " 15) Quit"
   }
 
   show_menu_status
@@ -1354,12 +1406,24 @@ menu() {
         log_i "OS load/entry set -> ${OS_LOAD_ADDRESS} / ${OS_ENTRY_POINT}"
         ;;
       11)
-        individual_steps_menu
+        read -r -p "Work folder [${WORKDIR_ABS}]: " _wdir || true
+        if [[ -n "${_wdir}" ]]; then
+          WORKDIR="${_wdir}"
+          resolve_workdir_abs
+          init_run_outputs
+          log_i "Work folder set -> ${WORKDIR_ABS}"
+        fi
         ;;
       12)
-        delete_workdir
+        individual_steps_menu
         ;;
       13)
+        install_host_deps
+        ;;
+      14)
+        delete_workdir
+        ;;
+      15)
         log_i "Bye."
         break
         ;;
@@ -1376,7 +1440,9 @@ menu() {
 }
 
 # ----------------------------- Main ------------------------------------------
+warn_host_deps
 load_manifest_defaults
+_CLI_STEPS_SEEN=0  # reset so CLI args override manifest steps_to_run
 parse_args "$@"
 apply_no_color
 setup_logging
