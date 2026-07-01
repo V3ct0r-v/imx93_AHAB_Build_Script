@@ -1408,8 +1408,11 @@ menu() {
       11)
         read -r -p "Work folder [${WORKDIR_ABS}]: " _wdir || true
         if [[ -n "${_wdir}" ]]; then
+          _wdir="${_wdir/#\~/$HOME}"
           WORKDIR="${_wdir}"
           resolve_workdir_abs
+          RUN_ID=""
+          OUTPUTS_RUN_DIR=""
           init_run_outputs
           log_i "Work folder set -> ${WORKDIR_ABS}"
         fi
