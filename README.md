@@ -1,6 +1,6 @@
 # i.MX93 Secure Boot Automation (AHAB + SPSDK)
 
-**Current Version:** 7.3
+**Current Version:** 7.4
 
 
 <span style="color:red"><strong>Do not commit keys or signed outputs.</strong></span>
@@ -13,7 +13,8 @@ The script supports EVK and FRDM targets and can generate bootloader images for 
 
 | Version | Status | Summary |
 |---|---|---|
-| 7.3 | Current release | Interactive dependency install from menu; non-fatal startup dep warning; `assert_host_deps` before build runs; added `libusb-1.0-0-dev`, `libudev-dev`, `libgnutls28-dev`, `efitools`, `CROSS_COMPILE`/`ARCH` for ATF and U-Boot; fix CLI `--step` overriding manifest `steps_to_run`; set work folder from menu. |
+| 7.4 | Current release | U-Boot board `.env` file is now located dynamically instead of assuming `board/freescale/`, fixing Step 2 against `uboot-imx` `lf_v2026.04`, where the i.MX boards moved to `board/nxp/`. Manifest env customizations are applied by an in-place rewrite instead of `sed`, so values containing `/`, `&`, or `|` are written verbatim and backslash-continued values are replaced as a unit. |
+| 7.3 | Stable | Interactive dependency install from menu; non-fatal startup dep warning; `assert_host_deps` before build runs; added `libusb-1.0-0-dev`, `libudev-dev`, `libgnutls28-dev`, `efitools`, `CROSS_COMPILE`/`ARCH` for ATF and U-Boot; fix CLI `--step` overriding manifest `steps_to_run`; set work folder from menu. |
 | 7.2 | Stable | Pre-flight dependency check at startup; reports all missing tools at once with correct apt package names. `jq` now always required (not gated on manifest presence). |
 | 7.1 | Stable | Added JSON-manifest defaults, manifest-driven U-Boot env + Kconfig customization, and improved menu behavior for status redraw on empty Enter. |
 | 7.0 | Stable | Added OS container flow (steps 11..13), OS image/load/entry customization, individual-steps submenu, bootloader output rename to `bootloader_cntr_signed_*`, and timestamped OS container output naming. |
@@ -118,6 +119,8 @@ Behavior:
 - Manifest defaults are loaded at startup.
 - CLI arguments still override manifest values.
 - U-Boot env customizations under `uboot_env_customizations.<board>` are applied to the board `.env` file before U-Boot build (Step 2).
+- The `.env` file is located after the defconfig is applied, using `CONFIG_SYS_VENDOR`, `CONFIG_SYS_BOARD`, and `CONFIG_ENV_SOURCE_FILE` from `.config`, the same way U-Boot's own Makefile resolves `ENV_FILE`. This tracks upstream board directory moves (`board/freescale/` -> `board/nxp/` as of `uboot-imx` `lf_v2026.04`). A glob of `board/*/imx93_<board>/imx93_<board>.env` is used as a fallback.
+- Values are written verbatim; no shell or `sed` escaping is applied to them. Setting a variable whose current value spans multiple lines via trailing backslashes replaces the whole continued block.
 - U-Boot Kconfig toggles are read from `uboot_kconfig` and applied during Step 2 (`scripts/config --enable/--disable`).
 - JSON does not support real comments, so the sample manifest uses a `__comments` object for documentation.
 

@@ -3,9 +3,9 @@ set -euo pipefail
 
 # -----------------------------------------------------------------------------
 # i.MX93 Secure Boot Helper Script
-# Version: 7.3 [062026]
+# Version: 7.4 [082026]
 # -----------------------------------------------------------------------------
-SCRIPT_VERSION="7.3 [062026]"
+SCRIPT_VERSION="7.4 [082026]"
 
 # -----------------------------------------------------------------------------
 # i.MX93: Build + Sign U-Boot (AHAB) and create an SD/eMMC-bootable signed image
@@ -198,19 +198,85 @@ load_manifest_defaults() {
   refresh_firmware_selection_from_urls
 }
 
+# Locates the board .env file inside the U-Boot tree. Must be called from the
+# uboot-imx source root, after the defconfig has been applied (.config present).
+# The path is derived the same way U-Boot's Makefile derives ENV_FILE, because the
+# board directory moves between releases (board/freescale/* -> board/nxp/* in
+# lf_v2026.04). Prints the path on stdout; returns 1 if it cannot be found.
+uboot_env_file_for_target() {
+  local board vendor env_source dir candidate
+
+  if [[ -f .config ]]; then
+    board="$(sed -n 's/^CONFIG_SYS_BOARD="\(.*\)"$/\1/p' .config | head -n1)"
+    vendor="$(sed -n 's/^CONFIG_SYS_VENDOR="\(.*\)"$/\1/p' .config | head -n1)"
+    env_source="$(sed -n 's/^CONFIG_ENV_SOURCE_FILE="\(.*\)"$/\1/p' .config | head -n1)"
+    if [[ -n "${board}" ]]; then
+      dir="board${vendor:+/${vendor}}/${board}"
+      candidate="${dir}/${env_source:-${board}}.env"
+      if [[ -f "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
+    fi
+  fi
+
+  # Fallback for trees where .config does not carry the board/vendor strings.
+  for candidate in board/*/"imx93_${BOARD_TARGET}/imx93_${BOARD_TARGET}.env"; do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Sets or deletes one assignment in a U-Boot *.env file.
+# Usage: uboot_env_write_var <file> <key> set|delete [value]
+# Backslash-continued values are consumed as a unit so replacing a multi-line
+# variable does not leave orphaned continuation lines behind.
+uboot_env_write_var() {
+  local file="$1" key="$2" mode="$3" value="${4-}"
+  local line skipping=0 replaced=0
+  local -a out=()
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if (( skipping )); then
+      [[ "${line}" == *\\ ]] || skipping=0
+      continue
+    fi
+
+    if [[ "${line}" == "${key}="* ]]; then
+      [[ "${line}" == *\\ ]] && skipping=1
+      if [[ "${mode}" == "set" && ${replaced} -eq 0 ]]; then
+        out+=("${key}=${value}")
+        replaced=1
+      fi
+      continue
+    fi
+
+    out+=("${line}")
+  done < "${file}"
+
+  if [[ "${mode}" == "set" && ${replaced} -eq 0 ]]; then
+    out+=("${key}=${value}")
+  fi
+
+  if (( ${#out[@]} > 0 )); then
+    printf '%s\n' "${out[@]}" > "${file}"
+  else
+    : > "${file}"
+  fi
+}
+
 apply_manifest_uboot_env_customizations() {
-  local env_file entries key vtype value safe_value
+  local env_file entries key vtype value
 
   [[ -f "${MANIFEST_PATH}" ]] || return 0
   command -v jq >/dev/null 2>&1 || die "Manifest found at '${MANIFEST_PATH}' but 'jq' is not installed."
 
   normalize_board_target
-  if [[ "${BOARD_TARGET}" == "frdm" ]]; then
-    env_file="board/freescale/imx93_frdm/imx93_frdm.env"
-  else
-    env_file="board/freescale/imx93_evk/imx93_evk.env"
-  fi
-  [[ -f "${env_file}" ]] || die "Expected U-Boot env file not found: ${env_file}"
+  env_file="$(uboot_env_file_for_target)" ||     die "U-Boot env file not found for board '${BOARD_TARGET}' in $(pwd) (searched the path from .config and board/*/imx93_${BOARD_TARGET}/imx93_${BOARD_TARGET}.env)"
 
   entries="$(jq -r --arg board "${BOARD_TARGET}"     '(.uboot_env_customizations[$board] // {}) | to_entries[]? | [.key, (.value|type), (if .value == null then "" else (.value|tostring) end)] | @tsv'     "${MANIFEST_PATH}")"
   [[ -n "${entries}" ]] || return 0
@@ -222,17 +288,9 @@ apply_manifest_uboot_env_customizations() {
     [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "Invalid U-Boot env variable name in manifest: '${key}'"
 
     if [[ "${vtype}" == "null" ]]; then
-      sed -i "/^${key}=/d" "${env_file}"
-      continue
-    fi
-
-    safe_value="${value//\/\\}"
-    safe_value="${safe_value//&/\&}"
-
-    if grep -qE "^${key}=" "${env_file}"; then
-      sed -i "s|^${key}=.*$|${key}=${safe_value}|" "${env_file}"
+      uboot_env_write_var "${env_file}" "${key}" delete
     else
-      printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+      uboot_env_write_var "${env_file}" "${key}" set "${value}"
     fi
   done <<< "${entries}"
 }
